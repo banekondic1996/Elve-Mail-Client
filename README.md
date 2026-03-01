@@ -1,4 +1,4 @@
-# Elve-Mail-Client
+# <img src='https://github.com/banekondic1996/Elve-Mail-Client/blob/main/assets/icon256.png?raw=true' width='48px'> Elve-Mail-Client
 Mail client with blocking capabilities and AI analysis and app locking for mail protection <br> <br>
 **Features:**<br>
 <pre>
