@@ -83,13 +83,17 @@
         <button class="icon-btn" id="theme-btn"    title="Appearance">◑</button>
       </div>
     </div>
-    <div class="account-chip" id="account-chip">
+    <div class="account-chip" id="account-chip" style="cursor:pointer;position:relative;">
       <div class="account-avatar" id="account-avatar">?</div>
       <div class="account-info">
         <div class="account-email"    id="account-email">—</div>
         <div class="account-provider" id="account-provider">—</div>
       </div>
-      <button class="icon-btn small" id="add-account-btn" title="Add account">＋</button>
+      <span style="margin-left:auto;font-size:10px;color:var(--text3);flex-shrink:0">▾</span>
+    </div>
+    <!-- Account switcher popup -->
+    <div id="account-switcher-popup" class="hidden" style="position:absolute;left:8px;right:8px;top:calc(var(--account-chip-h,72px) + 4px);z-index:200;background:var(--surface);border:1px solid var(--border2);border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.4);overflow:hidden;">
+      <div id="accounts-list"></div>
     </div>
     <div class="sidebar-search">
       <input type="search" id="search-box" placeholder="Search…" class="sidebar-search-input">
@@ -156,20 +160,21 @@
         </div>
         <!-- Actions row -->
         <div class="reader-actions">
-          <button class="ra-btn"        id="reader-reply-btn">↩ Reply</button>
-          <button class="ra-btn ai"     id="ai-btn">⚡ AI Analysis</button>
-          <button class="ra-btn spam"   id="reader-spam-btn">🚫 Spam</button>
-          <button class="ra-btn"        id="reader-unsubscribe-btn">✉ Unsub</button>
+          <button class="ra-btn"         id="reader-reply-btn">↩ Reply</button>
+          <button class="ra-btn ai"      id="ai-btn">⚡ AI Analysis</button>
+          <button class="ra-btn archive" id="reader-archive-btn">📦 Archive</button>
+          <button class="ra-btn spam"    id="reader-spam-btn">🚫 Spam</button>
+          <button class="ra-btn"         id="reader-unsubscribe-btn">✉ Unsub</button>
           <!-- Block with submenu -->
           <div class="ra-btn-wrap" style="position:relative">
-            <button class="ra-btn"      id="reader-block-btn">🚷 Block ▾</button>
+            <button class="ra-btn"       id="reader-block-btn">🚷 Block ▾</button>
             <div class="block-menu hidden" id="block-menu">
               <button id="block-by-addr">By address</button>
               <button id="block-by-subject">By subject</button>
               <button id="block-by-domain">By domain</button>
             </div>
           </div>
-          <button class="ra-btn danger" id="reader-delete-btn">🗑</button>
+          <button class="ra-btn danger"  id="reader-delete-btn">🗑</button>
         </div>
       </div>
       <!-- AI panel -->
@@ -194,9 +199,29 @@
     <div class="overlay-card compose-card">
       <div class="ov-header"><span>New Message</span><button class="ov-close" data-close="compose-overlay">×</button></div>
       <div class="ov-body compose-body">
+        <!-- From / alias selector -->
+        <div class="compose-field">
+          <label class="compose-label">From</label>
+          <select id="compose-from" class="compose-input compose-select"></select>
+        </div>
+        <!-- To + CC/BCC toggles -->
         <div class="compose-field">
           <label class="compose-label">To</label>
-          <input type="email" id="compose-to" class="compose-input" placeholder="recipient@example.com" multiple>
+          <div style="display:flex;align-items:center;gap:6px;flex:1;">
+            <input type="email" id="compose-to" class="compose-input" placeholder="recipient@example.com" multiple style="flex:1">
+            <button id="compose-cc-toggle"  class="compose-field-toggle" title="Add CC">CC</button>
+            <button id="compose-bcc-toggle" class="compose-field-toggle" title="Add BCC">BCC</button>
+          </div>
+        </div>
+        <!-- CC row (hidden by default) -->
+        <div class="compose-field hidden" id="compose-cc-row">
+          <label class="compose-label">CC</label>
+          <input type="email" id="compose-cc" class="compose-input" placeholder="cc@example.com" multiple>
+        </div>
+        <!-- BCC row (hidden by default) -->
+        <div class="compose-field hidden" id="compose-bcc-row">
+          <label class="compose-label">BCC</label>
+          <input type="email" id="compose-bcc" class="compose-input" placeholder="bcc@example.com" multiple>
         </div>
         <div class="compose-field">
           <label class="compose-label">Subject</label>
@@ -253,6 +278,18 @@
         <div class="slider-wrap">
           <input type="range" min="180" max="320" value="220" id="sidebar-width-slider" class="range-slider">
           <span id="sidebar-width-val">220px</span>
+        </div>
+
+        <div class="theme-section-label" style="margin-top:16px">Wallpaper Blur</div>
+        <div class="slider-wrap">
+          <input type="range" min="0" max="20" value="0" step="1" id="bg-blur-slider" class="range-slider">
+          <span id="bg-blur-val">0px</span>
+        </div>
+
+        <div class="theme-section-label" style="margin-top:8px">Pane Transparency</div>
+        <div class="slider-wrap">
+          <input type="range" min="0.1" max="1" step="0.05" value="0.88" id="bg-opacity-slider" class="range-slider">
+          <span id="bg-opacity-val">88%</span>
         </div>
       </div>
     </div>

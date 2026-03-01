@@ -116,7 +116,7 @@ const UI = (() => {
         <div class="er-body">
           <div class="er-top">
             <span class="er-from">${esc(name)}${msg._scam?'<span class="scam-flag">⚠</span>':''}</span>
-            <span class="er-date">${dt}</span>
+            <span class="er-meta">${msg.hasAttachment?'<span class="att-icon" title="Has attachment">📎</span>':''}<span class="er-date">${dt}</span></span>
           </div>
           <div class="er-subject">${esc(msg.subject||'(no subject)')}</div>
         </div>`;
@@ -229,38 +229,212 @@ const UI = (() => {
   function _renderAttachments(attachments) {
     const bar = document.getElementById('reader-attachments');
     if (!bar) return;
-    if (!attachments.length) { bar.classList.add('hidden'); return; }
+    if (!attachments || !attachments.length) { bar.classList.add('hidden'); return; }
     bar.classList.remove('hidden');
     bar.innerHTML = attachments.map((a, i) => {
-      const size = a.size > 1024*1024 ? (a.size/1024/1024).toFixed(1)+'MB' : a.size > 1024 ? Math.round(a.size/1024)+'KB' : a.size+'B';
-      const icon = /image/i.test(a.contentType) ? '🖼' : /pdf/i.test(a.contentType) ? '📄' : /zip|archive/i.test(a.contentType) ? '📦' : /calendar|ics/i.test(a.contentType) ? '📅' : '📎';
-      return `<button class="att-chip" data-i="${i}" title="Download ${esc(a.filename)}">${icon} ${esc(a.filename)} <span class="att-size">${size}</span></button>`;
+      const sz = !a.size ? '' : a.size > 1024*1024 ? (a.size/1024/1024).toFixed(1)+'MB' : a.size > 1024 ? Math.round(a.size/1024)+'KB' : a.size+'B';
+      const isIcs = /calendar|ics|vcalendar/i.test(a.contentType) || /\.ics$/i.test(a.filename||'');
+      const icon  = isIcs ? '📅' : /image/i.test(a.contentType) ? '🖼' : /pdf/i.test(a.contentType) ? '📄' : /zip|archive/i.test(a.contentType) ? '📦' : '📎';
+      return `<button class="att-chip" data-i="${i}" title="${esc(a.filename)}">${icon} ${esc(a.filename||'attachment')}${sz?' <span class="att-size">'+sz+'</span>':''}${isIcs?'<span class="att-ics-badge">calendar</span>':''}</button>`;
     }).join('');
+
     bar.querySelectorAll('.att-chip').forEach(btn => {
       btn.addEventListener('click', () => {
         const a = attachments[parseInt(btn.dataset.i)];
-        if (!a || !a.content) return;
-        try {
-          // NW.js: save via file dialog
-          if (typeof nw !== 'undefined') {
-            const inp = document.createElement('input');
-            inp.type = 'file'; inp.nwsaveas = a.filename; inp.accept = a.contentType;
-            inp.addEventListener('change', () => {
-              if (!inp.value) return;
-              require('fs').writeFile(inp.value, Buffer.from(a.content), () => {});
-            });
-            inp.click();
-          } else {
-            // Browser fallback
-            const blob = new Blob([a.content], { type: a.contentType });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url; link.download = a.filename; link.click();
-            setTimeout(() => URL.revokeObjectURL(url), 2000);
-          }
-        } catch(e) {}
+        if (!a) return;
+
+        const isIcs = /calendar|ics|vcalendar/i.test(a.contentType) || /\.ics$/i.test(a.filename||'');
+
+        if (!a.content) {
+          // Not yet downloaded
+          btn.style.opacity = '0.5';
+          setTimeout(() => { btn.style.opacity = ''; }, 2000);
+          return;
+        }
+
+        if (isIcs) {
+          // Show ICS-specific dialog: Save file OR Add to app calendar
+          _showIcsDialog(a);
+          return;
+        }
+
+        // Standard save-as for all other types
+        _saveAttachment(a);
       });
     });
+  }
+
+  function _saveAttachment(a) {
+    try {
+      let bytes;
+      if (a.content instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(a.content))) {
+        bytes = a.content;
+      } else if (a.content instanceof ArrayBuffer) {
+        bytes = new Uint8Array(a.content);
+      } else if (typeof a.content === 'string') {
+        bytes = typeof Buffer !== 'undefined' ? Buffer.from(a.content, 'binary') : new TextEncoder().encode(a.content);
+      } else {
+        bytes = new Uint8Array(a.content);
+      }
+      const filename = a.filename || 'attachment';
+
+      if (typeof nw !== 'undefined') {
+        // NW.js native Save As dialog
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.setAttribute('nwsaveas', filename);
+        inp.addEventListener('change', () => {
+          if (!inp.value) return;
+          try {
+            const fs = require('fs');
+            fs.writeFile(inp.value, Buffer.from(bytes), err => {
+              if (err) { console.error('Save failed:', err); }
+            });
+          } catch(e) { console.error('NW.js save error:', e); }
+        });
+        // Must append to DOM briefly for NW.js
+        inp.style.display = 'none';
+        document.body.appendChild(inp);
+        inp.click();
+        setTimeout(() => { try { document.body.removeChild(inp); } catch(_) {} }, 3000);
+      } else {
+        // Browser fallback
+        const blob = new Blob([bytes], { type: a.contentType || 'application/octet-stream' });
+        const url  = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url; link.download = filename;
+        document.body.appendChild(link); link.click(); document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
+      }
+    } catch(e) {
+      console.error('[Attachment] Save error:', e);
+      alert('Could not save attachment:\n' + e.message);
+    }
+  }
+
+  function _showIcsDialog(a) {
+    document.getElementById('_ics-dialog')?.remove();
+
+    // Decode ICS text first to extract event details for preview
+    let icsText = '';
+    try {
+      if (typeof a.content === 'string') {
+        icsText = a.content;
+      } else {
+        const bytes = a.content instanceof Uint8Array ? a.content : new Uint8Array(a.content);
+        icsText = new TextDecoder('utf-8').decode(bytes);
+      }
+    } catch(e) {}
+
+    // Parse event details for preview
+    let events = [];
+    try { events = Calendar.parseICS(icsText, '', '#6c63ff'); } catch(e) {}
+    const ev = events[0]; // Show first event as preview
+
+    const fmtDate = (d) => {
+      if (!d) return '';
+      return d.toLocaleString([], {weekday:'short', year:'numeric', month:'short', day:'numeric',
+        hour: d.getHours()===0&&d.getMinutes()===0?undefined:'2-digit',
+        minute: d.getHours()===0&&d.getMinutes()===0?undefined:'2-digit'});
+    };
+
+    const previewHtml = ev ? `
+      <div style="background:var(--surface2);border-radius:12px;padding:14px 16px;margin-bottom:18px;border-left:4px solid var(--accent);">
+        <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:6px;">${esc(ev.summary)}</div>
+        <div style="font-size:12px;color:var(--text2);display:flex;flex-direction:column;gap:3px;">
+          <div>📅 ${esc(fmtDate(ev.start))}${ev.end?' → '+esc(fmtDate(ev.end)):''}</div>
+          ${ev.location?`<div>📍 ${esc(ev.location)}</div>`:''}
+          ${ev.organizer?`<div>👤 ${esc(ev.organizer)}</div>`:''}
+          ${ev.attendees&&ev.attendees.length?`<div>👥 ${ev.attendees.slice(0,3).map(a=>esc(a)).join(', ')}${ev.attendees.length>3?' +'+( ev.attendees.length-3)+' more':''}</div>`:''}
+          ${ev.description?`<div style="margin-top:6px;color:var(--text3);font-size:11px;line-height:1.5">${esc(ev.description.slice(0,140))}${ev.description.length>140?'…':''}</div>`:''}
+        </div>
+      </div>
+      ${events.length>1?`<div style="font-size:12px;color:var(--text3);margin-bottom:12px">+${events.length-1} more event${events.length>2?'s':''} in this file</div>`:''}
+    ` : '';
+
+    const dlg = document.createElement('div');
+    dlg.id = '_ics-dialog';
+    dlg.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;padding:20px;';
+    dlg.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border2);border-radius:18px;padding:24px 26px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.6);max-height:90vh;overflow-y:auto;">
+        <div style="font-size:28px;margin-bottom:8px;">📅</div>
+        <div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:4px;">${esc(a.filename||'Calendar Invite')}</div>
+        <div style="font-size:13px;color:var(--text3);margin-bottom:16px;">${events.length} event${events.length!==1?'s':''} found</div>
+        ${previewHtml}
+        <div style="margin-bottom:18px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">Remind me</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${[['None','0'],['15 min','15'],['30 min','30'],['1 hour','60'],['2 hours','120'],['1 day','1440'],['Custom','custom']].map(([label,val])=>
+              `<button class="ics-remind-btn" data-val="${val}" style="padding:5px 12px;border-radius:20px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-size:12px;cursor:pointer;transition:all .15s">${esc(label)}</button>`
+            ).join('')}
+          </div>
+          <div id="_ics-custom-wrap" style="display:none;margin-top:10px;display:flex;gap:8px;align-items:center">
+            <input id="_ics-custom-min" type="number" min="1" max="99999" placeholder="Minutes" style="width:100px;padding:6px 10px;border-radius:8px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-size:13px;">
+            <span style="font-size:13px;color:var(--text2)">minutes before</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <button id="_ics-add" style="background:var(--accent);color:#fff;border:none;border-radius:10px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;">📅 Add to Elve Calendar</button>
+          <button id="_ics-save" style="background:var(--surface2);color:var(--text);border:1px solid var(--border2);border-radius:10px;padding:11px 0;font-size:14px;cursor:pointer;">💾 Save File</button>
+          <button id="_ics-cancel" style="background:none;border:none;color:var(--text3);font-size:13px;cursor:pointer;padding:6px;">Cancel</button>
+        </div>
+      </div>`;
+    document.body.appendChild(dlg);
+
+    // Reminder button selection
+    let selectedReminder = 0; // minutes, 0 = none
+    const remindBtns = dlg.querySelectorAll('.ics-remind-btn');
+    remindBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        remindBtns.forEach(b => { b.style.background='var(--surface2)'; b.style.color='var(--text)'; });
+        btn.style.background='var(--accent)'; btn.style.color='#fff';
+        const val = btn.dataset.val;
+        const customWrap = document.getElementById('_ics-custom-wrap');
+        if (val === 'custom') {
+          customWrap.style.display='flex'; selectedReminder=0;
+          document.getElementById('_ics-custom-min')?.focus();
+        } else {
+          customWrap.style.display='none'; selectedReminder=parseInt(val)||0;
+        }
+      });
+    });
+    document.getElementById('_ics-custom-min')?.addEventListener('input', e => {
+      selectedReminder = parseInt(e.target.value)||0;
+    });
+
+    document.getElementById('_ics-cancel').onclick = () => dlg.remove();
+    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove(); });
+    document.getElementById('_ics-save').onclick = () => { dlg.remove(); _saveAttachment(a); };
+
+    document.getElementById('_ics-add').onclick = async () => {
+      dlg.remove();
+      try {
+        const calName = (a.filename||'Imported').replace(/\.ics$/i,'');
+        const cal = await Calendar.loadFromFile(icsText, calName);
+        // Apply user-chosen reminder to all events in this calendar
+        if (selectedReminder > 0) {
+          (cal.events||[]).forEach(ev => { ev.userReminder = selectedReminder; });
+          Calendar.save();
+        }
+        // Request notification permission
+        if ('Notification' in window && Notification.permission==='default') {
+          Notification.requestPermission().catch(()=>{});
+        }
+        // Toast
+        const toast = document.createElement('div');
+        const evCount = (cal.events||[]).length;
+        toast.textContent = `✓ Added "${calName}" — ${evCount} event${evCount!==1?'s':''}${selectedReminder>0?' · Reminder: '+_fmtReminder(selectedReminder):''}`;
+        toast.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:10px 22px;border-radius:20px;font-size:13px;font-weight:600;z-index:10001;white-space:nowrap;box-shadow:0 4px 20px rgba(0,0,0,.3)';
+        document.body.appendChild(toast);
+        setTimeout(()=>toast.remove(), 4000);
+      } catch(e) { alert('Failed to import calendar: ' + e.message); }
+    };
+  }
+
+  function _fmtReminder(mins) {
+    if (mins >= 1440) return Math.round(mins/1440)+'d before';
+    if (mins >= 60) return Math.round(mins/60)+'h before';
+    return mins+'min before';
   }
 
   function _wrapHtml(html) {

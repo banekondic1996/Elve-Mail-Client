@@ -1,0 +1,179 @@
+/* Elve Mail — themes.css */
+
+/* ── Dark (default) ── */
+.theme-dark {
+  --bg:#07070f; --sidebar-bg:#0c0c18; --list-bg:#0a0a15; --reader-bg:#07070f;
+  --surface:#0e0e1a; --surface2:#141424; --surface3:#1c1c30;
+  --border:#1a1a2e; --border2:#252540;
+  --accent:#6c63ff; --accent2:#9288ff; --accent-bg:rgba(108,99,255,.1); --accent-glow:rgba(108,99,255,.3);
+  --text:#e2e2f0; --text2:#8888b0; --text3:#46466a;
+  --danger:#ff4b6e; --warning:#ff9f1c; --success:#24d48e;
+  --row-hover:rgba(255,255,255,.03); --row-active:rgba(108,99,255,.1);
+}
+/* ── Midnight Blue ── */
+.theme-midnight {
+  --bg:#050810; --sidebar-bg:#080c1a; --list-bg:#060a14; --reader-bg:#050810;
+  --surface:#0c1020; --surface2:#121828; --surface3:#18202e;
+  --border:#161e30; --border2:#202c44;
+  --accent:#3b82f6; --accent2:#60a5fa; --accent-bg:rgba(59,130,246,.1); --accent-glow:rgba(59,130,246,.3);
+  --text:#dde6f5; --text2:#7090b8; --text3:#3a506e;
+  --danger:#f43f5e; --warning:#f59e0b; --success:#10b981;
+  --row-hover:rgba(255,255,255,.03); --row-active:rgba(59,130,246,.1);
+}
+/* ── Emerald ── */
+.theme-emerald {
+  --bg:#030d09; --sidebar-bg:#050f0b; --list-bg:#040c08; --reader-bg:#030d09;
+  --surface:#081510; --surface2:#0e1e16; --surface3:#14281e;
+  --border:#102018; --border2:#163024;
+  --accent:#10b981; --accent2:#34d399; --accent-bg:rgba(16,185,129,.1); --accent-glow:rgba(16,185,129,.3);
+  --text:#d4f0e6; --text2:#5a9e7e; --text3:#2e5444;
+  --danger:#f43f5e; --warning:#f59e0b; --success:#10b981;
+  --row-hover:rgba(255,255,255,.03); --row-active:rgba(16,185,129,.1);
+}
+/* ── Rose Gold ── */
+.theme-rose {
+  --bg:#0f080a; --sidebar-bg:#140b0e; --list-bg:#110809; --reader-bg:#0f080a;
+  --surface:#1c1014; --surface2:#24161a; --surface3:#2c1e22;
+  --border:#281820; --border2:#38222c;
+  --accent:#fb7185; --accent2:#fda4af; --accent-bg:rgba(251,113,133,.1); --accent-glow:rgba(251,113,133,.3);
+  --text:#f5dde2; --text2:#c07080; --text3:#7a4050;
+  --danger:#ff4b6e; --warning:#f59e0b; --success:#34d399;
+  --row-hover:rgba(255,255,255,.03); --row-active:rgba(251,113,133,.1);
+}
+/* ── Nord ── */
+.theme-nord {
+  --bg:#1a1f2e; --sidebar-bg:#1e2435; --list-bg:#1c2132; --reader-bg:#1a1f2e;
+  --surface:#232b3d; --surface2:#2b3548; --surface3:#333f55;
+  --border:#2e3a50; --border2:#3a4860;
+  --accent:#81a1c1; --accent2:#88c0d0; --accent-bg:rgba(129,161,193,.1); --accent-glow:rgba(129,161,193,.3);
+  --text:#eceff4; --text2:#8090a8; --text3:#4a5870;
+  --danger:#bf616a; --warning:#ebcb8b; --success:#a3be8c;
+  --row-hover:rgba(255,255,255,.04); --row-active:rgba(129,161,193,.12);
+}
+/* ── Light ── */
+.theme-light {
+  --bg:#f5f5f8; --sidebar-bg:#eeeeF2; --list-bg:#f0f0f4; --reader-bg:#ffffff;
+  --surface:#ffffff; --surface2:#f0f0f5; --surface3:#e8e8f0;
+  --border:#dddde8; --border2:#ccccdc;
+  --accent:#6c63ff; --accent2:#9288ff; --accent-bg:rgba(108,99,255,.08); --accent-glow:rgba(108,99,255,.2);
+  --text:#1a1a2e; --text2:#5555778; --text3:#9090b0;
+  --danger:#e0294a; --warning:#d97706; --success:#059669;
+  --row-hover:rgba(0,0,0,.03); --row-active:rgba(108,99,255,.08);
+}
+/* ── Solarized ── */
+.theme-solar {
+  --bg:#002b36; --sidebar-bg:#00222e; --list-bg:#002630; --reader-bg:#002b36;
+  --surface:#073642; --surface2:#0d4050; --surface3:#134a5c;
+  --border:#0a3a48; --border2:#124858;
+  --accent:#268bd2; --accent2:#2aa198; --accent-bg:rgba(38,139,210,.1); --accent-glow:rgba(38,139,210,.3);
+  --text:#eee8d5; --text2:#839496; --text3:#4a6068;
+  --danger:#dc322f; --warning:#b58900; --success:#859900;
+  --row-hover:rgba(255,255,255,.03); --row-active:rgba(38,139,210,.1);
+}
+/* ── Mocha ── */
+.theme-mocha {
+  --bg:#1c1410; --sidebar-bg:#201814; --list-bg:#1e1612; --reader-bg:#1c1410;
+  --surface:#2a2018; --surface2:#342820; --surface3:#3e3028;
+  --border:#3a2c22; --border2:#4a3830;
+  --accent:#d4956a; --accent2:#e8b08a; --accent-bg:rgba(212,149,106,.1); --accent-glow:rgba(212,149,106,.3);
+  --text:#f0e8de; --text2:#a08070; --text3:#6a5048;
+  --danger:#e05050; --warning:#f0a040; --success:#80c060;
+  --row-hover:rgba(255,255,255,.03); --row-active:rgba(212,149,106,.1);
+}
+
+/* ── Background patterns ── */
+
+/* ── Background patterns (applied as body::after overlay) ── */
+/* themes.js applies body.style.backgroundImage for custom images */
+/* Patterns are rendered via ::after to layer on top of bg color */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: var(--bg-pattern, none);
+  background-size: inherit;
+  opacity: var(--bg-opacity, 0);
+}
+
+.bg-noise {
+  --bg-pattern: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --bg-opacity: 0.05;
+}
+.bg-mesh {
+  --bg-pattern: radial-gradient(at 20% 20%, var(--accent) 0%, transparent 50%),
+                radial-gradient(at 80% 80%, var(--accent2) 0%, transparent 50%);
+  --bg-opacity: 0.08;
+}
+.bg-dots {
+  --bg-pattern: radial-gradient(circle, var(--text3) 1px, transparent 1px);
+  --bg-opacity: 0.4;
+}
+body.bg-dots::after { background-size: 24px 24px; }
+.bg-grid {
+  --bg-pattern: linear-gradient(var(--border) 1px, transparent 1px),
+                linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  --bg-opacity: 0.5;
+}
+body.bg-grid::after { background-size: 40px 40px; }
+
+/* Ensure all app content sits above the ::after overlay */
+.sidebar, .list-pane, .reader-pane, .overlay, .scan-overlay,
+#unlock-screen > *, #setup-screen > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   WALLPAPER / BACKGROUND LAYER SYSTEM
+   #bg-layer is z-index:-1 (behind everything in the DOM).
+   Body becomes transparent when wallpaper is active.
+   Panes become semi-transparent via --pane-opacity.
+   ══════════════════════════════════════════════════════════════ */
+
+/* Ensure app-screen and all screens have transparent background
+   so #bg-layer shows through */
+.screen { background: transparent !important; }
+#app-screen { background: transparent !important; }
+
+/* Sidebar, list, reader: semi-transparent when wallpaper is active */
+.sidebar {
+  background: color-mix(in srgb, var(--sidebar-bg) calc(var(--pane-opacity, 1) * 100%), transparent) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.list-pane {
+  background: color-mix(in srgb, var(--list-bg) calc(var(--pane-opacity, 1) * 100%), transparent) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.reader-pane {
+  background: color-mix(in srgb, var(--reader-bg) calc(var(--pane-opacity, 1) * 100%), transparent) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Overlays remain fully opaque */
+.overlay, .scan-overlay, #unlock-screen, #setup-screen {
+  background: rgba(0,0,0,0.6) !important;
+}
+.overlay-card, .unlock-card, .setup-card, .scan-card {
+  background: var(--surface) !important;
+}
+
+/* All content must sit above #bg-layer */
+.sidebar, .list-pane, .reader-pane,
+.overlay, .scan-overlay,
+#unlock-screen, #setup-screen,
+.sidebar-footer, .list-toolbar, .pager,
+#email-list-container, .reader-header,
+.reader-actions, .reader-body-wrap {
+  position: relative;
+  z-index: 1;
+}
+
+/* Pattern overlay (body::after) needs z-index 0 to sit above bg-layer but below content */
+body::after {
+  z-index: 0;
+}
