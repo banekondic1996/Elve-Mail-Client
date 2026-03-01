@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Elve Mail</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Bricolage+Grotesque:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/themes.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body class="theme-dark">
+
+<!-- UNLOCK -->
+<div id="unlock-screen" class="screen active">
+  <div class="unlock-bg"><div class="unlock-orb"></div></div>
+  <div class="unlock-card">
+    <div class="app-logo"><span class="logo-glyph">✦</span><span class="logo-text">Elve</span></div>
+    <div class="unlock-sub" id="unlock-sub">Enter your master password to unlock</div>
+    <input type="password" id="master-password-input" placeholder="Master password" class="master-input" autocomplete="current-password">
+    <div id="unlock-new-wrap" class="hidden">
+      <input type="password" id="master-confirm-input" placeholder="Confirm master password" class="master-input" style="margin-top:8px">
+      <div class="unlock-hint">This password encrypts your stored credentials.</div>
+    </div>
+    <button class="unlock-btn" id="unlock-btn">Unlock</button>
+    <div class="unlock-error hidden" id="unlock-error"></div>
+  </div>
+</div>
+
+<!-- SETUP -->
+<div id="setup-screen" class="screen">
+  <div class="setup-bg"><div class="setup-orb s1"></div><div class="setup-orb s2"></div></div>
+  <div class="setup-card">
+    <div class="setup-card-header">
+      <div class="app-logo"><span class="logo-glyph">✦</span><span class="logo-text">Elve</span></div>
+      <button class="setup-close-btn hidden" id="setup-close-btn" title="Back">×</button>
+    </div>
+    <div class="setup-title">Add an account</div>
+    <div class="provider-tabs" id="provider-tabs">
+      <button class="ptab active" data-p="gmail">Gmail</button>
+      <button class="ptab" data-p="yahoo">Yahoo</button>
+      <button class="ptab" data-p="outlook">Outlook</button>
+      <button class="ptab" data-p="imap">Custom IMAP</button>
+    </div>
+    <div class="pform active" id="pf-gmail">
+      <div class="info-box">Enable IMAP in <b>Gmail Settings → Forwarding and POP/IMAP</b>. With 2FA use an App Password.</div>
+      <div class="fg"><label>Gmail Address</label><input type="email" id="g-email" placeholder="you@gmail.com"></div>
+      <div class="fg"><label>Password / App Password</label><input type="password" id="g-pass"></div>
+    </div>
+    <div class="pform" id="pf-yahoo">
+      <div class="info-box">Yahoo requires an <b>App Password</b> — go to <b>Yahoo Account → Security → Generate app password</b>.</div>
+      <div class="fg"><label>Yahoo Address</label><input type="email" id="y-email" placeholder="you@yahoo.com"></div>
+      <div class="fg"><label>App Password</label><input type="password" id="y-pass"></div>
+    </div>
+    <div class="pform" id="pf-outlook">
+      <div class="info-box">Use your Microsoft password. With 2FA, create an App Password at <b>account.microsoft.com → Security</b>.</div>
+      <div class="fg"><label>Outlook / Hotmail / Live</label><input type="email" id="o-email" placeholder="you@outlook.com"></div>
+      <div class="fg"><label>Password</label><input type="password" id="o-pass"></div>
+    </div>
+    <div class="pform" id="pf-imap">
+      <div class="fg-row">
+        <div class="fg"><label>IMAP Host</label><input type="text" id="i-host" placeholder="imap.example.com"></div>
+        <div class="fg narrow"><label>Port</label><input type="number" id="i-port" value="993"></div>
+      </div>
+      <div class="fg"><label>Email / Username</label><input type="email" id="i-email" placeholder="you@example.com"></div>
+      <div class="fg"><label>Password</label><input type="password" id="i-pass"></div>
+    </div>
+    <div class="setup-err hidden" id="setup-err"></div>
+    <button class="connect-btn" id="connect-btn"><span id="cb-text">Connect</span><span id="cb-spin" class="spin hidden"></span></button>
+    <div class="setup-footer">Credentials encrypted with your master password · never leave your device</div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app-screen" class="screen">
+
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="app-logo small"><span class="logo-glyph">✦</span><span class="logo-text">Elve</span></div>
+      <div class="sidebar-header-btns">
+        <button class="icon-btn" id="compose-btn"  title="Compose">✏</button>
+        <button class="icon-btn" id="calendar-btn" title="Calendar">📅</button>
+        <button class="icon-btn" id="theme-btn"    title="Appearance">◑</button>
+      </div>
+    </div>
+    <div class="account-chip" id="account-chip">
+      <div class="account-avatar" id="account-avatar">?</div>
+      <div class="account-info">
+        <div class="account-email"    id="account-email">—</div>
+        <div class="account-provider" id="account-provider">—</div>
+      </div>
+      <button class="icon-btn small" id="add-account-btn" title="Add account">＋</button>
+    </div>
+    <div class="sidebar-search">
+      <input type="search" id="search-box" placeholder="Search…" class="sidebar-search-input">
+    </div>
+    <nav id="folder-nav" class="folder-nav">
+      <div class="folders-loading">Loading folders…</div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="sync-indicator" id="sync-indicator">
+        <span class="sync-dot idle" id="sync-dot"></span>
+        <span id="sync-text">Ready</span>
+      </div>
+      <div class="sidebar-actions">
+        <button class="sb-btn" id="rules-btn">⚙ Filters</button>
+        <button class="sb-btn" id="stats-btn">📊 Stats</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Email list -->
+  <div class="list-pane" id="list-pane">
+    <div class="list-toolbar">
+      <div class="list-toolbar-left">
+        <span class="folder-name-label" id="folder-name-label">Inbox</span>
+        <span class="msg-count" id="msg-count"></span>
+      </div>
+      <div class="list-toolbar-right">
+        <div class="selection-toolbar hidden" id="selection-toolbar">
+          <span class="sel-count" id="sel-count">0 selected</span>
+          <button class="toolbar-btn danger" id="bulk-delete-btn">🗑 Delete</button>
+          <button class="toolbar-btn" id="uncheck-all-btn">✕ Cancel</button>
+        </div>
+        <div class="normal-toolbar" id="normal-toolbar">
+          <button class="toolbar-btn" id="refresh-folder-btn">⟳ Refresh</button>
+        </div>
+      </div>
+    </div>
+    <div class="pager hidden" id="pager">
+      <button class="pager-btn" id="page-prev">‹ Prev</button>
+      <span class="pager-info" id="page-info">Page 1</span>
+      <button class="pager-btn" id="page-next">Next ›</button>
+    </div>
+    <div id="email-list-container"></div>
+  </div>
+
+  <!-- Reader -->
+  <div class="reader-pane" id="reader-pane">
+    <div class="reader-empty" id="reader-empty">
+      <div class="re-glyph">✦</div>
+      <div class="re-title">Select a message</div>
+    </div>
+    <div class="reader-view hidden" id="reader-view">
+      <div class="reader-header">
+        <div class="reader-subject" id="reader-subject"></div>
+        <div class="reader-meta">
+          <div class="reader-from-wrap">
+            <div class="reader-avatar" id="reader-avatar"></div>
+            <div>
+              <div class="reader-from" id="reader-from"></div>
+              <div class="reader-to"   id="reader-to"></div>
+            </div>
+          </div>
+          <div class="reader-date" id="reader-date"></div>
+        </div>
+        <!-- Actions row -->
+        <div class="reader-actions">
+          <button class="ra-btn"        id="reader-reply-btn">↩ Reply</button>
+          <button class="ra-btn ai"     id="ai-btn">⚡ AI Analysis</button>
+          <button class="ra-btn spam"   id="reader-spam-btn">🚫 Spam</button>
+          <button class="ra-btn"        id="reader-unsubscribe-btn">✉ Unsub</button>
+          <!-- Block with submenu -->
+          <div class="ra-btn-wrap" style="position:relative">
+            <button class="ra-btn"      id="reader-block-btn">🚷 Block ▾</button>
+            <div class="block-menu hidden" id="block-menu">
+              <button id="block-by-addr">By address</button>
+              <button id="block-by-subject">By subject</button>
+              <button id="block-by-domain">By domain</button>
+            </div>
+          </div>
+          <button class="ra-btn danger" id="reader-delete-btn">🗑</button>
+        </div>
+      </div>
+      <!-- AI panel -->
+      <div class="ai-panel hidden" id="ai-panel">
+        <div class="ai-panel-inner">
+          <span class="ai-badge" id="ai-badge"></span>
+          <p class="ai-summary" id="ai-summary"></p>
+          <ul class="ai-flags" id="ai-flags"></ul>
+          <div class="ai-panel-footer" id="ai-panel-footer"></div>
+        </div>
+        <button class="ai-dismiss" id="ai-dismiss">×</button>
+      </div>
+      <div class="reader-body-wrap">
+        <div class="reader-attachments hidden" id="reader-attachments"></div>
+        <iframe id="reader-iframe" class="reader-iframe" sandbox="allow-same-origin allow-popups" frameborder="0"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Compose ══ -->
+  <div class="overlay hidden" id="compose-overlay">
+    <div class="overlay-card compose-card">
+      <div class="ov-header"><span>New Message</span><button class="ov-close" data-close="compose-overlay">×</button></div>
+      <div class="ov-body compose-body">
+        <div class="compose-field">
+          <label class="compose-label">To</label>
+          <input type="email" id="compose-to" class="compose-input" placeholder="recipient@example.com" multiple>
+        </div>
+        <div class="compose-field">
+          <label class="compose-label">Subject</label>
+          <input type="text"  id="compose-subject" class="compose-input" placeholder="Subject">
+        </div>
+        <div class="compose-field compose-body-field">
+          <textarea id="compose-body" class="compose-textarea" placeholder="Write your message…"></textarea>
+        </div>
+        <div class="compose-actions">
+          <button class="save-btn" id="compose-send-btn">Send ↗</button>
+          <button class="toolbar-btn" id="compose-attach-btn">📎 Attach</button>
+          <button class="toolbar-btn" id="compose-discard-btn">Discard</button>
+          <span class="compose-status" id="compose-status"></span>
+        </div>
+        <div class="compose-attachments" id="compose-attachments"></div>
+        <input type="file" id="compose-file-input" multiple class="hidden">
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Appearance ══ -->
+  <div class="overlay hidden" id="theme-overlay">
+    <div class="overlay-card narrow">
+      <div class="ov-header"><span>Appearance</span><button class="ov-close" data-close="theme-overlay">×</button></div>
+      <div class="ov-body">
+        <div class="theme-section-label">Colour Theme</div>
+        <div class="theme-grid" id="theme-grid"></div>
+
+        <div class="theme-section-label" style="margin-top:16px">Custom Accent</div>
+        <div class="tint-row">
+          <input type="color" id="custom-tint" value="#6c63ff" class="tint-picker">
+          <button class="toolbar-btn" id="tint-reset-btn">Reset</button>
+          <span class="tint-hint">Overrides theme accent</span>
+        </div>
+
+        <div class="theme-section-label" style="margin-top:16px">Background Image</div>
+        <div class="bg-image-row">
+          <button class="toolbar-btn" id="bg-image-btn">Choose Image…</button>
+          <button class="toolbar-btn" id="bg-image-clear-btn">Clear</button>
+          <span class="bg-image-name" id="bg-image-name">None</span>
+        </div>
+        <input type="file" id="bg-image-file" accept="image/*" class="hidden">
+
+        <div class="theme-section-label" style="margin-top:16px">Background Pattern</div>
+        <div class="bg-options" id="bg-options">
+          <button class="bg-opt active" data-bg="none">None</button>
+          <button class="bg-opt" data-bg="noise">Noise</button>
+          <button class="bg-opt" data-bg="mesh">Mesh</button>
+          <button class="bg-opt" data-bg="dots">Dots</button>
+          <button class="bg-opt" data-bg="grid">Grid</button>
+        </div>
+
+        <div class="theme-section-label" style="margin-top:16px">Sidebar Width</div>
+        <div class="slider-wrap">
+          <input type="range" min="180" max="320" value="220" id="sidebar-width-slider" class="range-slider">
+          <span id="sidebar-width-val">220px</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Filters ══ -->
+  <div class="overlay hidden" id="rules-overlay">
+    <div class="overlay-card">
+      <div class="ov-header"><span>Filters &amp; Auto-Delete Rules</span><button class="ov-close" data-close="rules-overlay">×</button></div>
+      <div class="ov-body rules-body">
+        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-domain" class="rule-chk"> Delete by Domain</label><div class="tag-wrap" id="tw-domain"><input class="tag-inp" id="ti-domain" placeholder="spam.com… (press Enter to add)"></div></div>
+        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-email"  class="rule-chk"> Delete by Email Address</label><div class="tag-wrap" id="tw-email"><input class="tag-inp" id="ti-email" placeholder="noreply@bad.com… (press Enter to add)"></div></div>
+        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-name"   class="rule-chk"> Delete by Sender Name</label><div class="tag-wrap" id="tw-name"><input class="tag-inp" id="ti-name" placeholder="Marketing… (press Enter to add)"></div></div>
+        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-subject" class="rule-chk"> Delete by Subject</label><div class="tag-wrap" id="tw-subject"><input class="tag-inp" id="ti-subject" placeholder="you've won… (press Enter to add)"></div></div>
+        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-body"   class="rule-chk"> Delete by Body Keyword</label><div class="tag-wrap" id="tw-body"><input class="tag-inp" id="ti-body" placeholder="click here… (press Enter to add)"></div></div>
+        <div class="rule-row simple"><label class="rule-label"><input type="checkbox" id="r-dupes" class="rule-chk" checked> Remove Duplicate Emails</label></div>
+        <div class="rule-row simple"><label class="rule-label"><input type="checkbox" id="r-aiscam" class="rule-chk"> Auto-delete AI HIGH-risk scams</label></div>
+        <button class="save-btn" id="save-rules-btn">Save Filters</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Stats ══ -->
+  <div class="overlay hidden" id="stats-overlay">
+    <div class="overlay-card">
+      <div class="ov-header"><span>Statistics</span><button class="ov-close" data-close="stats-overlay">×</button></div>
+      <div class="ov-body">
+        <div class="stats-row">
+          <div class="stat-box"><div class="stat-n" id="st-fetched">0</div><div class="stat-l">Fetched</div></div>
+          <div class="stat-box"><div class="stat-n" id="st-deleted">0</div><div class="stat-l">Deleted</div></div>
+          <div class="stat-box"><div class="stat-n" id="st-dupes">0</div><div class="stat-l">Dupes</div></div>
+          <div class="stat-box"><div class="stat-n" id="st-scams">0</div><div class="stat-l">Scams</div></div>
+        </div>
+        <div class="log-container" id="log-container"><div class="log-empty">No activity yet</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ AI Settings overlay ══ -->
+  <div class="overlay hidden" id="ai-settings-overlay">
+    <div class="overlay-card narrow">
+      <div class="ov-header"><span>AI Settings</span><button class="ov-close" data-close="ai-settings-overlay">×</button></div>
+      <div class="ov-body">
+        <p style="font-size:12px;color:var(--text2);margin-bottom:14px">Priority: Chrome AI (Gemini Nano) → API → Local heuristic</p>
+        <div class="fg">
+          <label>AI Provider</label>
+          <select id="ai-provider" class="fg-select">
+            <option value="heuristic">Local heuristic (no API needed)</option>
+            <option value="anthropic">Anthropic Claude API</option>
+            <option value="openai">OpenAI / compatible API</option>
+          </select>
+        </div>
+        <div class="fg"><label>API Key</label><input type="password" id="ai-api-key" placeholder="sk-…" class="fg-input"></div>
+        <div class="fg" id="ai-baseurl-row">
+          <label>Base URL <span style="color:var(--text3)">(OpenAI-compatible)</span></label>
+          <input type="text" id="ai-base-url" placeholder="https://api.openai.com" class="fg-input">
+        </div>
+        <div class="fg"><label>Model <span style="color:var(--text3)">(optional)</span></label>
+          <input type="text" id="ai-model" placeholder="gpt-4o-mini / claude-haiku-…" class="fg-input">
+        </div>
+        <div class="fg info-box" style="font-size:11px">
+          <b>Chrome AI (Gemini Nano):</b> Enable in NW.js via <code>--enable-ai-api</code> flag (already set in package.json). Go to <b>chrome://components</b> and download the Gemini Nano model (~1–2 GB). Once downloaded, Chrome AI is used automatically — no API key needed.
+        </div>
+        <button class="save-btn" id="ai-settings-save">Save</button>
+        <span class="compose-status" id="ai-settings-status" style="margin-left:10px"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ AI Scan overlay ══ -->
+  <div class="scan-overlay hidden" id="scan-overlay">
+    <div class="scan-card">
+      <div class="scan-hd-row">
+        <div class="scan-hd">⚡ AI Scanning Folder</div>
+        <button class="toolbar-btn" id="ai-cfg-btn" style="font-size:11px">⚙ AI Settings</button>
+      </div>
+      <div class="scan-progress-track"><div class="scan-progress-fill" id="scan-fill"></div></div>
+      <div class="scan-status" id="scan-status">Initialising…</div>
+      <div class="scan-log" id="scan-log"></div>
+      <button class="save-btn hidden" id="scan-done-btn">Done</button>
+    </div>
+  </div>
+
+  <!-- ══ Calendar overlay ══ -->
+  <div class="overlay hidden" id="calendar-overlay">
+    <div class="overlay-card cal-overlay-card">
+      <div class="ov-header"><span>📅 Calendar</span><button class="ov-close" data-close="calendar-overlay">×</button></div>
+      <div class="ov-body cal-ov-body">
+        <!-- Left: month grid -->
+        <div class="cal-main">
+          <div id="cal-grid-container"></div>
+          <div class="cal-day-detail" id="cal-day-detail">
+            <div style="color:var(--text3);font-size:12px">Click a day to see events</div>
+          </div>
+        </div>
+        <!-- Right: calendar list + add -->
+        <div class="cal-sidebar">
+          <div class="cal-section-label">My Calendars</div>
+          <div id="cal-list"></div>
+          <div class="cal-section-label" style="margin-top:14px">Add Calendar</div>
+          <div class="fg"><label>Name</label><input type="text" id="cal-name-input" class="fg-input" placeholder="Work / Personal…"></div>
+          <div class="fg"><label>Google Calendar URL</label><input type="text" id="cal-url-input" class="fg-input" placeholder="https://calendar.google.com/…"></div>
+          <button class="save-btn" id="cal-add-btn" style="width:100%;margin-top:4px">Add</button>
+          <div style="margin-top:8px;display:flex;gap:6px">
+            <button class="toolbar-btn" id="cal-file-btn" style="flex:1">📎 Import .ics</button>
+            <button class="toolbar-btn" id="cal-refresh-btn" style="flex:1">⟳ Refresh</button>
+          </div>
+          <input type="file" id="cal-file-input" accept=".ics" class="hidden">
+          <div class="fg info-box" style="font-size:11px;margin-top:10px">
+            Google Calendar: open calendar → <b>Settings → Share → Get public ICS link</b>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /#app-screen -->
+
+<script src="js/crypto.js"></script>
+<script src="js/imap-client.js"></script>
+<script src="js/smtp-client.js"></script>
+<script src="js/rules.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/themes.js"></script>
+<script src="js/notifier.js"></script>
+<script src="js/calendar.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "name": "mailguard",
+  "version": "1.0.0",
+  "description": "MailGuard — AI-powered desktop mail client for Gmail, Yahoo & Outlook",
+
+  "main": "index.html",
+  "scripts": {
+    "start": "nw .",
+    "build-win": "nw-builder --platforms win64 --buildDir dist .",
+    "build-mac": "nw-builder --platforms osx64 --buildDir dist .",
+    "build-linux": "nw-builder --platforms linux64 --buildDir dist ."
+  },
+  "dependencies": {
+    "imap": "^0.8.19",
+    "node-forge": "^1.3.1",
+    "nw": "^0.108.0",
+    "mailparser": "^3.6.5",
+    "nodemailer": "^6.9.7",
+    "ical.js": "^1.5.0"
+  },
+  "devDependencies": {
+    "nw-builder": "^4.7.4"
+  },
+  "window": {
+    "title": "MailGuard",
+    "width": 1400,
+    "height": 900,
+    "min_width": 900,
+    "min_height": 600,
+    "icon": "assets/icon.png",
+    "frame": true,
+    "resizable": true
+  },
+  "chromium-args": "--enable-features=OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction,OptimizationHints --flag-switches-begin --enable-ai-api --flag-switches-end",
+  "node-remote": "http://localhost:*",
+  "nodejs": true
+}
