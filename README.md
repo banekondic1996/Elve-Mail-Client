@@ -1,5 +1,7 @@
 # <img src='https://github.com/banekondic1996/Elve-Mail-Client/blob/main/assets/icon256.png?raw=true' width='48px'> Elve-Mail-Client
-Mail client with blocking capabilities and AI analysis and app locking for mail protection <br> <br>
+Mail client with blocking capabilities and AI analysis and app locking for mail protection <br>
+F' Microsoft, I have to make everyapp for myself i guess <br>
+<br> 
 **Features:**<br>
 <pre>
 -Block by domain, keyword, title, address (auto deletes those email, even from spam, or send to custom folder)
