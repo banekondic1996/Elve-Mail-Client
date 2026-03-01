@@ -16,9 +16,19 @@ F' Microsoft, I have to make every app by myself i guess <br>
 </pre>
 **To fix:**<br>
 <pre>
--Calendar
+-Calendar files messages not showing in visual format
+-Calendar custom notify time should be in hours, not minutes
+-Notification options (will it display email body and title or not)
+-Background not applying as theme, and tint
 -Speed
--Multiple mail accounts
+-Multiple mail accounts, switching not deleting mail from previous mail account, no CSS for switcher
+-Creating new messages options for Yahoo alias emails as sender address 
+-Unread folder not working
+-AI still not made to work
+-Unsubscribe won't work (it should at least find link for unsubscribe and open it)
+-Check does Spam button actually send info to server
+-Archive email won't work
+-If selected text contains @ add context to block address or domain
 </pre>
 **In the works....**
 <img width="1546" height="1021" alt="image" src="https://github.com/user-attachments/assets/818ce701-74f0-4a71-a861-95b660b73351" />
