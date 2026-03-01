@@ -14,7 +14,6 @@ Mail client with blocking capabilities and AI analysis and app locking for mail 
 **To fix:**<br>
 <pre>
 -Calendar
--Tooltip for links, so you know the real link
 -Speed
 -Multiple mail accounts
 </pre>
