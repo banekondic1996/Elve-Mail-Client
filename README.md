@@ -27,6 +27,7 @@ F' Microsoft, I have to make every app by myself i guess <br>
 -Check does Spam button actually send info to server
 -If selected text contains @ add context to block address or domain
 -Add option to label mails by color
+-No notification if other folder is selected and not inbox bug
 </pre>
 **In the works....**
 <img width="1546" height="1021" alt="image" src="https://github.com/user-attachments/assets/818ce701-74f0-4a71-a861-95b660b73351" />
