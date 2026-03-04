@@ -16,20 +16,16 @@ F' Microsoft, I have to make every app by myself i guess <br>
 </pre>
 **To fix:**<br>
 <pre>
+-Tray icon functions
+-Show received verification codes as notification
 -Calendar files messages not showing in visual format
 -Calendar custom notify time should be in hours, not minutes
--Notification options (will it display email body and title or not)
--Background not applying as theme, and tint
 -Speed
 -Multiple mail accounts, switching not deleting mail from previous mail account, no CSS for switcher
--Creating new messages options for Yahoo alias emails as sender address 
--Unread folder not working
 -AI still not made to work
 -Unsubscribe won't work (it should at least find link for unsubscribe and open it)
 -Check does Spam button actually send info to server
--Archive email won't work
 -If selected text contains @ add context to block address or domain
--Have option for custom filters to move mail to custom folders based on those filters
 -Add option to label mails by color
 </pre>
 **In the works....**
