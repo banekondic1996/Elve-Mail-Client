@@ -44,7 +44,9 @@ const UI = (() => {
   const F_ICONS = { inbox:'📥', sent:'📤', trash:'🗑', drafts:'📝', spam:'🚫', flagged:'⭐', archive:'📦', folder:'📁' };
   const SP_ORDER = ['inbox','sent','drafts','spam','trash','archive','flagged'];
 
-  function renderFolderNav(navEl, folders, unreadCounts, activeFolder, onSelect) {
+  let _folderCtxMenu = null;
+
+  function renderFolderNav(navEl, folders, unreadCounts, activeFolder, onSelect, onFolderAction) {
     navEl.innerHTML='';
 
     // Unread virtual folder (IMAP SEARCH UNSEEN)
@@ -75,9 +77,55 @@ const UI = (() => {
       custom.forEach(f => {
         const el = _mkFolder(f, unreadCounts[f.path]||0, activeFolder===f.path);
         el.addEventListener('click',()=>onSelect(f.path));
+        el.addEventListener('contextmenu', e => {
+          e.preventDefault();
+          e.stopPropagation();
+          _showFolderCtx(e.clientX, e.clientY, f, onFolderAction);
+        });
         navEl.appendChild(el);
       });
     }
+
+    const add = document.createElement('div');
+    add.className = 'folder-item';
+    add.innerHTML = '<span class="folder-icon">＋</span><span class="folder-label">New Folder</span>';
+    add.addEventListener('click',()=>onSelect('__create_folder__'));
+    navEl.appendChild(add);
+  }
+
+  function _ensureFolderCtx() {
+    if (_folderCtxMenu) return _folderCtxMenu;
+    const menu = document.createElement('div');
+    menu.id = '_folder-ctx';
+    menu.className = 'folder-ctx-menu hidden';
+    document.body.appendChild(menu);
+    document.addEventListener('click', () => menu.classList.add('hidden'));
+    window.addEventListener('blur', () => menu.classList.add('hidden'));
+    window.addEventListener('resize', () => menu.classList.add('hidden'));
+    _folderCtxMenu = menu;
+    return menu;
+  }
+
+  function _showFolderCtx(x, y, folder, onFolderAction) {
+    if (!onFolderAction || folder?.special !== 'folder') return;
+    const menu = _ensureFolderCtx();
+    menu.innerHTML = `
+      <button data-act="rename">Rename Folder</button>
+      <button data-act="move">Move as Subfolder…</button>
+      <button data-act="delete" class="danger">Delete Folder</button>
+    `;
+    menu.querySelectorAll('button[data-act]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        menu.classList.add('hidden');
+        onFolderAction(btn.dataset.act, folder.path);
+      });
+    });
+    menu.classList.remove('hidden');
+    const maxX = window.innerWidth - 210;
+    const maxY = window.innerHeight - 140;
+    menu.style.left = Math.max(8, Math.min(x, maxX)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, maxY)) + 'px';
   }
 
   function _glabel(txt) {
@@ -123,19 +171,35 @@ const UI = (() => {
 
       const cb = row.querySelector('input[type=checkbox]');
 
+      let holdTriggered = false;
+      const cancelHold = () => {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+      };
+
       // Hold 500ms = selection mode
-      row.addEventListener('mousedown', () => {
+      row.addEventListener('mousedown', ev => {
+        if (ev.button !== 0) return;
+        holdTriggered = false;
+        cancelHold();
         holdTimer = setTimeout(() => {
-          holdTimer=null;
+          holdTimer = null;
+          holdTriggered = true;
           _enterSel();
-          cb.checked=true; row.classList.add('selected');
+          cb.checked = true;
+          row.classList.add('selected');
           _updateSelBar();
         }, 500);
       });
-      ['mouseup','mouseleave'].forEach(e=>row.addEventListener(e,()=>clearTimeout(holdTimer)));
+      ['mouseup','mouseleave'].forEach(e => row.addEventListener(e, cancelHold));
 
       // Click
       row.addEventListener('click', e => {
+        if (holdTriggered) {
+          holdTriggered = false;
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         if (selMode) {
           cb.checked=!cb.checked;
           row.classList.toggle('selected',cb.checked);
@@ -205,19 +269,53 @@ const UI = (() => {
   // Current msg reference for context menu block-by-keyword
   let _ctxMsg = null;
 
+  function _readerPalette() {
+    const cs = getComputedStyle(document.body || document.documentElement);
+    const v = name => (cs.getPropertyValue(name) || '').trim();
+    return {
+      bg:     v('--reader-bg') || '#ffffff',
+      panel:  v('--surface2')  || '#f5f7fb',
+      text:   v('--text')      || '#1a1a2e',
+      text2:  v('--text2')     || '#5b647a',
+      border: v('--border')    || '#d5dbe8',
+      accent: v('--accent')    || '#6c63ff',
+      accent2:v('--accent2')   || '#8a82ff',
+      mailSize: v('--mail-font-size') || '14px',
+    };
+  }
+
   function setEmailBody(bodyData, msg) {
     _ctxMsg = msg || null;
     const iframe = document.getElementById('reader-iframe');
     if (!iframe) return;
+    const pal = _readerPalette();
+
+    const plainSplit = _splitPlainThreads(bodyData.text || '');
 
     if (bodyData.html) {
-      _writeIframe(iframe, _wrapHtml(bodyData.html));
+      _writeIframe(iframe, _wrapHtml(bodyData.html, plainSplit));
     } else if (bodyData.text?.trim()) {
+      const split = plainSplit;
+      const replyItems = split.replies || [];
+      const replyNav = replyItems.length > 1
+        ? `<aside class="reply-nav"><div class="reply-nav-title">Replies</div>${replyItems.map((seg,i)=>`<a href="#_reply_${i+1}" class="reply-nav-btn">${esc(_replyLabel(seg, i))}</a>`).join('')}</aside>`
+        : '';
+      const replyHtml = replyItems.map((seg,i)=>`<details class="reply-thread" id="_reply_${i+1}" ${i===0?'open':''}><summary>${esc(_replyLabel(seg, i))}</summary><pre>${esc(seg)}</pre></details>`).join('');
       _writeIframe(iframe, `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
         html,body{margin:0;padding:0;}
-        body{margin:0;padding:24px 28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.75;color:#1a1a2e;background:#fff;word-break:break-word;}
-        pre{white-space:pre-wrap;font-family:inherit;} a{color:#6c63ff;}
-      </style></head><body><pre>${esc(bodyData.text)}</pre></body></html>`);
+        body{margin:0;padding:24px 28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:${pal.mailSize};line-height:1.75;color:${pal.text};background:${pal.bg};word-break:break-word;}
+        body.has-reply-nav{padding-right:200px;}
+        pre{white-space:pre-wrap;font-family:inherit;color:${pal.text};}
+        details.reply-thread{margin-top:14px;border:1px solid ${pal.border};border-radius:10px;background:${pal.panel};}
+        details.reply-thread>summary{cursor:pointer;padding:8px 12px;color:${pal.text2};font-weight:600;list-style:none;}
+        details.reply-thread>summary::-webkit-details-marker{display:none;}
+        details.reply-thread pre{padding:0 12px 12px;margin:0;color:${pal.text2};}
+        a{color:${pal.accent};}
+        .reply-nav{position:fixed;top:16px;right:10px;width:178px;border:1px solid ${pal.border};background:${pal.panel};border-radius:10px;padding:8px;z-index:20;max-height:82vh;overflow:auto;box-shadow:0 6px 20px rgba(0,0,0,.18);}
+        .reply-nav-title{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:${pal.text2};margin-bottom:6px;}
+        .reply-nav-btn{display:block;padding:6px 7px;font-size:11px;color:${pal.text};text-decoration:none;border-radius:7px;margin-bottom:4px;background:transparent;}
+        .reply-nav-btn:hover{background:rgba(0,0,0,.06);}
+      </style></head><body class="${replyItems.length>1?'has-reply-nav':''}"><pre>${esc(split.main)}</pre>${replyHtml}${replyNav}</body></html>`);
     } else {
       _writeIframe(iframe, '<div style="padding:32px;color:#888;font-family:system-ui;font-size:14px">(No message body)</div>');
     }
@@ -244,6 +342,8 @@ const UI = (() => {
         if (!a) return;
 
         const isIcs = /calendar|ics|vcalendar/i.test(a.contentType) || /\.ics$/i.test(a.filename||'');
+        const isImage = _isImageAttachment(a);
+        const isPdf = _isPdfAttachment(a);
 
         if (!a.content) {
           // Not yet downloaded
@@ -258,58 +358,145 @@ const UI = (() => {
           return;
         }
 
+        if (isImage) {
+          _showImagePreview(a);
+          return;
+        }
+
+        if (isPdf) {
+          _showPdfPreview(a);
+          return;
+        }
+
         // Standard save-as for all other types
         _saveAttachment(a);
       });
     });
   }
 
+  function _toU8(content) {
+    if (!content) throw new Error('Attachment content missing');
+    if (content instanceof Uint8Array) return content;
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer(content)) return new Uint8Array(content);
+    if (content instanceof ArrayBuffer) return new Uint8Array(content);
+    if (Array.isArray(content)) return Uint8Array.from(content);
+    if (content.buffer instanceof ArrayBuffer && typeof content.byteLength === 'number') {
+      return new Uint8Array(content.buffer, content.byteOffset || 0, content.byteLength);
+    }
+    if (typeof content === 'string') {
+      return typeof TextEncoder !== 'undefined'
+        ? new TextEncoder().encode(content)
+        : Uint8Array.from(content.split('').map(ch => ch.charCodeAt(0) & 0xff));
+    }
+    throw new Error('Unsupported attachment format');
+  }
+
+  function _downloadBlob(filename, bytes, contentType) {
+    const blob = new Blob([bytes], { type: contentType || 'application/octet-stream' });
+    const url  = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename || 'attachment';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  function _isImageAttachment(a) {
+    return /image\//i.test(a.contentType || '') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a.filename || '');
+  }
+
+  function _isPdfAttachment(a) {
+    return /application\/pdf/i.test(a.contentType || '') || /\.pdf$/i.test(a.filename || '');
+  }
+
   function _saveAttachment(a) {
     try {
-      let bytes;
-      if (a.content instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(a.content))) {
-        bytes = a.content;
-      } else if (a.content instanceof ArrayBuffer) {
-        bytes = new Uint8Array(a.content);
-      } else if (typeof a.content === 'string') {
-        bytes = typeof Buffer !== 'undefined' ? Buffer.from(a.content, 'binary') : new TextEncoder().encode(a.content);
-      } else {
-        bytes = new Uint8Array(a.content);
-      }
+      const bytes = _toU8(a.content);
       const filename = a.filename || 'attachment';
-
-      if (typeof nw !== 'undefined') {
-        // NW.js native Save As dialog
-        const inp = document.createElement('input');
-        inp.type = 'file';
-        inp.setAttribute('nwsaveas', filename);
-        inp.addEventListener('change', () => {
-          if (!inp.value) return;
-          try {
-            const fs = require('fs');
-            fs.writeFile(inp.value, Buffer.from(bytes), err => {
-              if (err) { console.error('Save failed:', err); }
-            });
-          } catch(e) { console.error('NW.js save error:', e); }
-        });
-        // Must append to DOM briefly for NW.js
-        inp.style.display = 'none';
-        document.body.appendChild(inp);
-        inp.click();
-        setTimeout(() => { try { document.body.removeChild(inp); } catch(_) {} }, 3000);
-      } else {
-        // Browser fallback
-        const blob = new Blob([bytes], { type: a.contentType || 'application/octet-stream' });
-        const url  = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url; link.download = filename;
-        document.body.appendChild(link); link.click(); document.body.removeChild(link);
-        setTimeout(() => URL.revokeObjectURL(url), 3000);
-      }
+      _downloadBlob(filename, bytes, a.contentType);
     } catch(e) {
       console.error('[Attachment] Save error:', e);
       alert('Could not save attachment:\n' + e.message);
     }
+  }
+
+  function _showImagePreview(a) {
+    let bytes;
+    try { bytes = _toU8(a.content); }
+    catch(e) { alert('Could not open image preview:\n' + e.message); return; }
+
+    const blob = new Blob([bytes], { type: a.contentType || 'image/*' });
+    const url = URL.createObjectURL(blob);
+    document.getElementById('_img-preview')?.remove();
+
+    const dlg = document.createElement('div');
+    dlg.id = '_img-preview';
+    dlg.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;padding:20px;';
+    dlg.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border2);border-radius:14px;max-width:96vw;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);gap:10px;">
+          <span style="font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70vw;">🖼 ${esc(a.filename || 'image')}</span>
+          <div style="display:flex;gap:6px;">
+            <button id="_img-download" class="toolbar-btn">Download</button>
+            <button id="_img-close" class="toolbar-btn">Close</button>
+          </div>
+        </div>
+        <div style="padding:10px;display:flex;align-items:center;justify-content:center;max-width:96vw;max-height:84vh;overflow:auto;background:#000;">
+          <img src="${url}" alt="${esc(a.filename || 'image')}" style="max-width:100%;max-height:82vh;object-fit:contain;">
+        </div>
+      </div>`;
+    document.body.appendChild(dlg);
+
+    const close = () => {
+      URL.revokeObjectURL(url);
+      dlg.remove();
+    };
+    dlg.addEventListener('click', e => { if (e.target === dlg) close(); });
+    dlg.querySelector('#_img-close')?.addEventListener('click', close);
+    dlg.querySelector('#_img-download')?.addEventListener('click', () => _downloadBlob(a.filename || 'image', bytes, a.contentType));
+  }
+
+  function _showPdfPreview(a) {
+    let bytes;
+    try { bytes = _toU8(a.content); }
+    catch(e) { alert('Could not open PDF:\n' + e.message); return; }
+
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    document.getElementById('_pdf-preview')?.remove();
+
+    const dlg = document.createElement('div');
+    dlg.id = '_pdf-preview';
+    dlg.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;padding:20px;';
+    dlg.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border2);border-radius:14px;max-width:98vw;max-height:96vh;width:960px;display:flex;flex-direction:column;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);gap:10px;">
+          <span style="font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70vw;">📄 ${esc(a.filename || 'document.pdf')}</span>
+          <div style="display:flex;gap:6px;">
+            <button id="_pdf-download" class="toolbar-btn">Download</button>
+            <button id="_pdf-open-ext" class="toolbar-btn">Open External</button>
+            <button id="_pdf-close" class="toolbar-btn">Close</button>
+          </div>
+        </div>
+        <div style="background:#111;flex:1;min-height:65vh;">
+          <iframe src="${url}" style="width:100%;height:100vh;border:none;" title="${esc(a.filename || 'PDF Preview')}"></iframe>
+        </div>
+      </div>`;
+    document.body.appendChild(dlg);
+
+    const close = () => {
+      URL.revokeObjectURL(url);
+      dlg.remove();
+    };
+    dlg.addEventListener('click', e => { if (e.target === dlg) close(); });
+    dlg.querySelector('#_pdf-close')?.addEventListener('click', close);
+    dlg.querySelector('#_pdf-download')?.addEventListener('click', () => _downloadBlob(a.filename || 'document.pdf', bytes, 'application/pdf'));
+    dlg.querySelector('#_pdf-open-ext')?.addEventListener('click', () => {
+      if (typeof nw !== 'undefined') nw.Shell.openExternal(url);
+      else window.open(url, '_blank');
+    });
   }
 
   function _showIcsDialog(a) {
@@ -437,26 +624,46 @@ const UI = (() => {
     return mins+'min before';
   }
 
-  function _wrapHtml(html) {
+  function _wrapHtml(html, plainSplit) {
+    const pal = _readerPalette();
     const clean = html
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/\son\w+\s*=\s*["'][^"']*["']/gi, '');
+    const replies = plainSplit?.replies || [];
+    const threadSection = replies.length > 1 ? `
+  <section class="_thread-fallback">
+    <h3>Conversation Thread</h3>
+    ${replies.map((seg, i) => `<details class="reply-thread" id="_txt_reply_${i+1}" ${i===0?'open':''}><summary>${esc(_replyLabel(seg, i))}</summary><div class="reply-thread-inner"><pre>${esc(seg)}</pre></div></details>`).join('')}
+  </section>` : '';
     return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
   html,body{margin:0;padding:0;}
-  body{background:#fff!important;color:#1a1a1a!important;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.7;padding:16px;max-width:100%;overflow-x:hidden;}
+  body{background:${pal.bg}!important;color:${pal.text}!important;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:${pal.mailSize};line-height:1.7;padding:16px;max-width:100%;overflow-x:hidden;word-break:break-word;}
+  body.has-reply-nav{padding-right:200px;}
   img{max-width:100%!important;height:auto!important;}
   *{max-width:100%;box-sizing:border-box;}
-  a{color:#6c63ff!important;cursor:pointer;}
+  p,div,span,td,th,li,pre,strong,b,em{color:inherit;}
+  a{color:${pal.accent}!important;cursor:pointer;}
   a[title]{position:relative;}
-  [bgcolor="#000000"],[bgcolor="#111111"],[bgcolor="#0d0d0d"]{background:#fff!important;}
+  blockquote,.gmail_quote,.yahoo_quoted,.protonmail_quote{display:block!important;margin:12px 0 12px 8px!important;padding-left:12px!important;border-left:2px solid ${pal.border}!important;color:${pal.text2}!important;}
+  details.reply-thread{margin:12px 0;border:1px solid ${pal.border};border-radius:10px;background:${pal.panel};}
+  details.reply-thread>summary{cursor:pointer;padding:8px 12px;color:${pal.text2};font-weight:600;list-style:none;}
+  details.reply-thread>summary::-webkit-details-marker{display:none;}
+  details.reply-thread .reply-thread-inner{padding:0 12px 12px;}
+  .reply-nav{position:fixed;top:16px;right:10px;width:178px;border:1px solid ${pal.border};background:${pal.panel};border-radius:10px;padding:8px;z-index:22;max-height:82vh;overflow:auto;box-shadow:0 6px 20px rgba(0,0,0,.18);}
+  .reply-nav-title{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:${pal.text2};margin-bottom:6px;}
+  .reply-nav-btn{display:block;width:100%;padding:6px 7px;font-size:11px;color:${pal.text};text-align:left;border:none;background:transparent;border-radius:7px;cursor:pointer;margin-bottom:4px;}
+  .reply-nav-btn:hover{background:rgba(0,0,0,.06);}
+  pre{white-space:pre-wrap!important;font-family:inherit!important;}
   #_ctx{position:fixed;background:#1e1e2e;border:1px solid #3a3a5c;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:9999;min-width:180px;padding:4px 0;font-family:system-ui;font-size:12px;}
   #_ctx button{display:block;width:100%;background:none;border:none;color:#c8c8e8;padding:8px 14px;text-align:left;cursor:pointer;}
   #_ctx button:hover{background:rgba(108,99,255,.2);color:#fff;}
   #_ctx hr{border:none;border-top:1px solid #2a2a3e;margin:3px 0;}
   #_tt{position:fixed;background:#111;color:#adf;font-size:11px;padding:4px 8px;border-radius:5px;z-index:9998;pointer-events:none;max-width:320px;word-break:break-all;white-space:pre-wrap;}
+  ._thread-fallback{margin-top:20px;padding:12px;border:1px dashed ${pal.border};border-radius:12px;background:${pal.panel};}
+  ._thread-fallback h3{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:${pal.text2};margin:0 0 8px;}
 </style>
-</head><body>${clean}</body></html>`;
+</head><body>${clean}${threadSection}</body></html>`;
   }
 
   function _writeIframe(iframe, html) {
@@ -471,6 +678,8 @@ const UI = (() => {
   // Wire all iframe interactions: link open, tooltips, context menu
   function _wireIframeInteractions(doc) {
     try {
+      _enhanceReplyThreads(doc);
+      _enforceReadableColors(doc);
       // Remove any old context menu
       doc.getElementById('_ctx')?.remove();
       doc.getElementById('_tt')?.remove();
@@ -508,6 +717,14 @@ const UI = (() => {
         a.addEventListener('click', e => {
           e.preventDefault(); e.stopPropagation();
           if (!href || href === '#') return;
+          if (href.startsWith('#')) {
+            const target = doc.querySelector(href);
+            if (target) {
+              if (target.tagName === 'DETAILS') target.open = true;
+              target.scrollIntoView({behavior:'smooth', block:'start'});
+            }
+            return;
+          }
           if (typeof nw !== 'undefined') nw.Shell.openExternal(href);
           else window.open(href, '_blank');
         });
@@ -526,6 +743,204 @@ const UI = (() => {
         _showTextCtxMenu(ctx, e, doc);
       });
     } catch(err) {}
+  }
+
+  function _enhanceReplyThreads(doc) {
+    const sel = 'blockquote,.gmail_quote,.yahoo_quoted,.protonmail_quote';
+    const quotes = [...doc.querySelectorAll(sel)];
+    quotes.sort((a,b)=>_nodeDepth(b)-_nodeDepth(a));
+    const wrapped = [];
+    quotes.forEach(node => {
+      if (!node || node.closest('details.reply-thread')) return;
+      const txt = (node.textContent || '').trim();
+      if (!txt || txt.length < 8) return;
+      const split = _splitPlainThreads(txt);
+      if ((split.replies || []).length > 1 && node.parentNode) {
+        const frag = doc.createDocumentFragment();
+        split.replies.forEach((seg, i) => {
+          const d = doc.createElement('details');
+          d.className = 'reply-thread';
+          d.id = `_reply_${wrapped.length + 1}`;
+          const s = doc.createElement('summary');
+          s.textContent = _replyLabel(seg, wrapped.length);
+          const body = doc.createElement('div');
+          body.className = 'reply-thread-inner';
+          const pre = doc.createElement('pre');
+          pre.textContent = seg;
+          body.appendChild(pre);
+          d.appendChild(s);
+          d.appendChild(body);
+          if (wrapped.length === 0 && i === 0) d.open = true;
+          wrapped.push({id:d.id,label:s.textContent});
+          frag.appendChild(d);
+        });
+        node.parentNode.insertBefore(frag, node);
+        node.remove();
+        return;
+      }
+      const d = doc.createElement('details');
+      d.className = 'reply-thread';
+      d.id = `_reply_${wrapped.length + 1}`;
+      const s = doc.createElement('summary');
+      s.textContent = _replyLabel(txt, wrapped.length);
+      const wrap = doc.createElement('div');
+      wrap.className = 'reply-thread-inner';
+      node.parentNode?.insertBefore(d, node);
+      d.appendChild(s);
+      d.appendChild(wrap);
+      wrap.appendChild(node);
+      if (wrapped.length === 0) d.open = true;
+      wrapped.push({id:d.id,label:s.textContent});
+    });
+    if (wrapped.length > 1) _mountReplyNav(doc, wrapped);
+  }
+
+  function _nodeDepth(n) {
+    let d = 0, cur = n;
+    while (cur && cur.parentElement) { d++; cur = cur.parentElement; }
+    return d;
+  }
+
+  function _mountReplyNav(doc, replies) {
+    doc.getElementById('_reply_nav')?.remove();
+    const nav = doc.createElement('aside');
+    nav.id = '_reply_nav';
+    nav.className = 'reply-nav';
+    nav.innerHTML = `<div class="reply-nav-title">Replies</div>`;
+    replies.forEach((r, i) => {
+      const b = doc.createElement('button');
+      b.className = 'reply-nav-btn';
+      b.textContent = r.label || `Reply ${i + 1}`;
+      b.addEventListener('click', () => {
+        const target = doc.getElementById(r.id);
+        if (!target) return;
+        target.open = true;
+        target.scrollIntoView({behavior:'smooth', block:'start'});
+      });
+      nav.appendChild(b);
+    });
+    doc.body.appendChild(nav);
+    doc.body.classList.add('has-reply-nav');
+  }
+
+  function _extractThreadStamp(text) {
+    const t = String(text || '').slice(0, 420);
+    const rx = [
+      /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+\w{3,9}\s+\d{1,2},?\s+\d{4}(?:\s+at\s+\d{1,2}:\d{2}(?:\s?[AP]M)?)?/i,
+      /\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}(?:\s+\d{1,2}:\d{2}(?:\s?[AP]M)?)?/,
+      /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4}(?:\s+\d{1,2}:\d{2}(?:\s?[AP]M)?)?/i,
+    ];
+    for (const re of rx) {
+      const m = t.match(re);
+      if (m) return m[0];
+    }
+    return '';
+  }
+
+  function _replyLabel(text, idx) {
+    const stamp = _extractThreadStamp(text);
+    return stamp ? `Reply ${idx + 1} · ${stamp}` : `Reply ${idx + 1}`;
+  }
+
+  function _splitPlainThreads(text) {
+    const src = String(text || '');
+    const markers = [
+      /\nOn .{0,200}wrote:\n/gi,
+      /\n>+\s*On .{0,200}wrote:\n/gi,
+      /\n-{2,}\s*Original Message\s*-{2,}\n/gi,
+      /\nFrom:\s.+\nSent:\s.+\nTo:\s.+\nSubject:\s.+\n/gi,
+      /\nFrom:\s.+\nDate:\s.+\nSubject:\s.+\n/gi,
+      /\n_{2,}\nFrom:\s.+\n/gi,
+      /\nBegin forwarded message:\n/gi,
+    ];
+    const cuts = [];
+    markers.forEach(re => {
+      let m;
+      re.lastIndex = 0;
+      while ((m = re.exec(src)) !== null) {
+        if (m.index > 0) cuts.push(m.index);
+        if (m.index === re.lastIndex) re.lastIndex++;
+      }
+    });
+    const points = [...new Set(cuts)].sort((a,b)=>a-b);
+    if (!points.length) return { main: src.trim(), replies: [] };
+    const main = src.slice(0, points[0]).trim();
+    const replies = points.map((start, i) => src.slice(start, points[i + 1] ?? src.length).trim()).filter(Boolean);
+    return { main: main || src.trim(), replies };
+  }
+
+  function _parseRGBA(color) {
+    if (!color) return null;
+    const c = String(color).trim();
+    if (/^#([0-9a-f]{6})$/i.test(c)) {
+      const h = c.slice(1);
+      return { rgb: [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)], a: 1 };
+    }
+    if (/^#([0-9a-f]{3})$/i.test(c)) {
+      const h = c.slice(1);
+      return { rgb: [parseInt(h[0] + h[0],16), parseInt(h[1] + h[1],16), parseInt(h[2] + h[2],16)], a: 1 };
+    }
+    if (/transparent/i.test(c)) return { rgb: null, a: 0 };
+    const m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
+    if (!m) return null;
+    return {
+      rgb: [parseInt(m[1],10), parseInt(m[2],10), parseInt(m[3],10)],
+      a: m[4] == null ? 1 : Math.max(0, Math.min(1, parseFloat(m[4]) || 0)),
+    };
+  }
+
+  function _luma(rgb) {
+    if (!rgb) return 1;
+    const [r,g,b] = rgb.map(v => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    });
+    return (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+  }
+
+  function _contrast(a, b) {
+    const l1 = _luma(a), l2 = _luma(b);
+    const hi = Math.max(l1, l2), lo = Math.min(l1, l2);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  function _enforceReadableColors(doc) {
+    const pal = _readerPalette();
+    const body = doc?.body;
+    if (!body) return;
+
+    const bg = (_parseRGBA(doc.defaultView?.getComputedStyle(body).backgroundColor)?.rgb) ||
+      (_parseRGBA(pal.bg)?.rgb) ||
+      [10,10,16];
+    if (_luma(bg) > 0.45) return; // mostly needed for dark themes
+
+    const textRGB = (_parseRGBA(pal.text)?.rgb) || [226,226,240];
+    const accRGB = (_parseRGBA(pal.accent)?.rgb) || [108,99,255];
+    const nodes = body.querySelectorAll('*');
+
+    nodes.forEach(el => {
+      const tag = (el.tagName || '').toLowerCase();
+      if (['img','svg','path','video','canvas'].includes(tag)) return;
+      const cs = doc.defaultView?.getComputedStyle(el);
+      if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return;
+      const fg = _parseRGBA(cs.color)?.rgb;
+      if (!fg) return;
+      const effectiveBg = _effectiveBgRGB(el, bg, doc);
+      if (_luma(effectiveBg) > 0.62) return; // keep original colors on light backgrounds
+      if (_contrast(fg, effectiveBg) >= 4.3) return;
+      const target = (tag === 'a' || el.closest('a')) ? accRGB : textRGB;
+      el.style.setProperty('color', `rgb(${target[0]}, ${target[1]}, ${target[2]})`, 'important');
+    });
+  }
+
+  function _effectiveBgRGB(el, fallback, doc) {
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      const bg = _parseRGBA(doc.defaultView?.getComputedStyle(cur).backgroundColor);
+      if (bg && bg.rgb && bg.a > 0.15) return bg.rgb;
+      cur = cur.parentElement;
+    }
+    return fallback;
   }
 
   function _showLinkCtxMenu(ctx, e, href, doc) {

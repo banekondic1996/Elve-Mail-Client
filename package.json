@@ -29,7 +29,8 @@
     "min_height": 600,
     "icon": "assets/icon.png",
     "frame": true,
-    "resizable": true
+    "resizable": true,
+    "show_in_taskbar":false
   },
   "chromium-args": "--enable-features=OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction,OptimizationHints --flag-switches-begin --enable-ai-api --flag-switches-end",
   "node-remote": "http://localhost:*",

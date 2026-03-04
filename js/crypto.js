@@ -90,7 +90,46 @@ const Vault = (() => {
     return accounts;
   }
 
+  async function _decryptWithPassword(password) {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) throw new Error('Vault not initialized');
+    const salt = getSalt();
+    const key = await deriveKey(password, salt);
+    const { iv, data } = JSON.parse(stored);
+    const dec = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: new Uint8Array(iv) },
+      key,
+      new Uint8Array(data)
+    );
+    return JSON.parse(new TextDecoder().decode(dec));
+  }
+
+  async function verifyPassword(password) {
+    try {
+      await _decryptWithPassword(password);
+      return { ok: true };
+    } catch(_) {
+      return { ok: false, error: 'Wrong current password' };
+    }
+  }
+
+  async function changePassword(currentPassword, newPassword) {
+    let accounts;
+    try {
+      accounts = await _decryptWithPassword(currentPassword);
+    } catch(_) {
+      return { ok: false, error: 'Wrong current password' };
+    }
+
+    // Re-encrypt with a brand new salt and key.
+    const newSalt = crypto.getRandomValues(new Uint8Array(16));
+    localStorage.setItem(SALT_KEY, JSON.stringify(Array.from(newSalt)));
+    masterKey = await deriveKey(newPassword, newSalt);
+    await saveAccounts(accounts);
+    return { ok: true };
+  }
+
   function lock() { masterKey = null; }
 
-  return { hasVault, unlock, addAccount, loadAccounts, saveAccounts, lock };
+  return { hasVault, unlock, addAccount, loadAccounts, saveAccounts, verifyPassword, changePassword, lock };
 })();

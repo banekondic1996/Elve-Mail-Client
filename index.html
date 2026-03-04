@@ -83,20 +83,34 @@
         <button class="icon-btn" id="theme-btn"    title="Appearance">◑</button>
       </div>
     </div>
-    <div class="account-chip" id="account-chip" style="cursor:pointer;position:relative;">
-      <div class="account-avatar" id="account-avatar">?</div>
-      <div class="account-info">
-        <div class="account-email"    id="account-email">—</div>
-        <div class="account-provider" id="account-provider">—</div>
+    <div class="account-chip-wrap">
+      <div class="account-chip" id="account-chip">
+        <div class="account-avatar" id="account-avatar">?</div>
+        <div class="account-info">
+          <div class="account-email"    id="account-email">—</div>
+          <div class="account-provider" id="account-provider">—</div>
+        </div>
+        <svg class="accsw-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 3.5l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </div>
-      <span style="margin-left:auto;font-size:10px;color:var(--text3);flex-shrink:0">▾</span>
-    </div>
-    <!-- Account switcher popup -->
-    <div id="account-switcher-popup" class="hidden" style="position:absolute;left:8px;right:8px;top:calc(var(--account-chip-h,72px) + 4px);z-index:200;background:var(--surface);border:1px solid var(--border2);border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.4);overflow:hidden;">
-      <div id="accounts-list"></div>
+      <div id="account-switcher-popup" class="accsw-popup hidden">
+        <div class="accsw-popup-hdr">Accounts</div>
+        <div id="accounts-list"></div>
+      </div>
     </div>
     <div class="sidebar-search">
       <input type="search" id="search-box" placeholder="Search…" class="sidebar-search-input">
+      <div class="sidebar-search-opts">
+        <select id="search-field" class="sidebar-search-select" title="Search field">
+          <option value="all">All</option>
+          <option value="subject">Title</option>
+          <option value="from">Sender</option>
+          <option value="body">Body</option>
+        </select>
+        <select id="search-match" class="sidebar-search-select" title="Match mode">
+          <option value="contains">Contains</option>
+          <option value="exact">Exact word</option>
+        </select>
+      </div>
     </div>
     <nav id="folder-nav" class="folder-nav">
       <div class="folders-loading">Loading folders…</div>
@@ -108,6 +122,7 @@
       </div>
       <div class="sidebar-actions">
         <button class="sb-btn" id="rules-btn">⚙ Filters</button>
+        <button class="sb-btn" id="move-rules-btn">📂 Move Rules</button>
         <button class="sb-btn" id="stats-btn">📊 Stats</button>
       </div>
     </div>
@@ -174,6 +189,7 @@
               <button id="block-by-domain">By domain</button>
             </div>
           </div>
+          <button class="ra-btn"         id="reader-raw-btn">📋 Raw</button>
           <button class="ra-btn danger"  id="reader-delete-btn">🗑</button>
         </div>
       </div>
@@ -197,55 +213,72 @@
   <!-- ══ Compose ══ -->
   <div class="overlay hidden" id="compose-overlay">
     <div class="overlay-card compose-card">
-      <div class="ov-header"><span>New Message</span><button class="ov-close" data-close="compose-overlay">×</button></div>
-      <div class="ov-body compose-body">
-        <!-- From / alias selector -->
+      <div class="ov-header"><span>✉ New Message</span><button class="ov-close" data-close="compose-overlay">×</button></div>
+
+      <!-- Fixed header fields -->
+      <div class="compose-fields">
         <div class="compose-field">
           <label class="compose-label">From</label>
           <select id="compose-from" class="compose-input compose-select"></select>
         </div>
-        <!-- To + CC/BCC toggles -->
         <div class="compose-field">
           <label class="compose-label">To</label>
           <div style="display:flex;align-items:center;gap:6px;flex:1;">
-            <input type="email" id="compose-to" class="compose-input" placeholder="recipient@example.com" multiple style="flex:1">
-            <button id="compose-cc-toggle"  class="compose-field-toggle" title="Add CC">CC</button>
-            <button id="compose-bcc-toggle" class="compose-field-toggle" title="Add BCC">BCC</button>
+            <input type="email" id="compose-to" list="compose-to-suggestions" class="compose-input" placeholder="recipient@example.com" multiple style="flex:1">
+            <button id="compose-cc-toggle"  class="compose-field-toggle">CC</button>
+            <button id="compose-bcc-toggle" class="compose-field-toggle">BCC</button>
           </div>
         </div>
-        <!-- CC row (hidden by default) -->
+        <datalist id="compose-to-suggestions"></datalist>
         <div class="compose-field hidden" id="compose-cc-row">
           <label class="compose-label">CC</label>
           <input type="email" id="compose-cc" class="compose-input" placeholder="cc@example.com" multiple>
         </div>
-        <!-- BCC row (hidden by default) -->
         <div class="compose-field hidden" id="compose-bcc-row">
           <label class="compose-label">BCC</label>
           <input type="email" id="compose-bcc" class="compose-input" placeholder="bcc@example.com" multiple>
         </div>
         <div class="compose-field">
           <label class="compose-label">Subject</label>
-          <input type="text"  id="compose-subject" class="compose-input" placeholder="Subject">
+          <input type="text" id="compose-subject" class="compose-input" placeholder="Subject">
         </div>
-        <div class="compose-field compose-body-field">
-          <textarea id="compose-body" class="compose-textarea" placeholder="Write your message…"></textarea>
-        </div>
-        <div class="compose-actions">
-          <button class="save-btn" id="compose-send-btn">Send ↗</button>
-          <button class="toolbar-btn" id="compose-attach-btn">📎 Attach</button>
-          <button class="toolbar-btn" id="compose-discard-btn">Discard</button>
-          <span class="compose-status" id="compose-status"></span>
-        </div>
-        <div class="compose-attachments" id="compose-attachments"></div>
-        <input type="file" id="compose-file-input" multiple class="hidden">
       </div>
+
+      <!-- RTE toolbar — fixed, only visible in HTML mode -->
+      <div class="compose-rich-toolbar hidden" id="compose-rich-toolbar">
+        <button class="rte-btn" id="compose-fmt-bold"          title="Bold"><b>B</b></button>
+        <button class="rte-btn" id="compose-fmt-italic"        title="Italic"><i>I</i></button>
+        <button class="rte-btn" id="compose-fmt-underline"     title="Underline"><u>U</u></button>
+        <button class="rte-btn" id="compose-fmt-strikeThrough" title="Strikethrough"><s>S</s></button>
+        <span class="rte-sep"></span>
+        <button class="rte-btn" id="compose-fmt-ul"   title="Bullet list">• List</button>
+        <button class="rte-btn" id="compose-fmt-ol"   title="Numbered list">1. List</button>
+        <button class="rte-btn" id="compose-fmt-link" title="Insert link">🔗 Link</button>
+      </div>
+
+      <!-- Scrollable body: textarea or richtext editor -->
+      <div class="compose-body-area">
+        <textarea id="compose-body"     class="compose-textarea" placeholder="Write your message…"></textarea>
+        <div      id="compose-richtext" class="compose-richtext hidden" contenteditable="true" data-placeholder="Write your message…"></div>
+      </div>
+
+      <!-- Fixed footer -->
+      <div class="compose-actions">
+        <button class="save-btn"    id="compose-send-btn">Send ↗</button>
+        <button class="toolbar-btn" id="compose-html-toggle">HTML</button>
+        <button class="toolbar-btn" id="compose-attach-btn">📎 Attach</button>
+        <button class="toolbar-btn" id="compose-discard-btn">Discard</button>
+        <span class="compose-status" id="compose-status"></span>
+      </div>
+      <div class="compose-attachments" id="compose-attachments"></div>
+      <input type="file" id="compose-file-input" multiple class="hidden">
     </div>
   </div>
 
   <!-- ══ Appearance ══ -->
   <div class="overlay hidden" id="theme-overlay">
     <div class="overlay-card narrow">
-      <div class="ov-header"><span>Appearance</span><button class="ov-close" data-close="theme-overlay">×</button></div>
+      <div class="ov-header"><span>Settings</span><button class="ov-close" data-close="theme-overlay">×</button></div>
       <div class="ov-body">
         <div class="theme-section-label">Colour Theme</div>
         <div class="theme-grid" id="theme-grid"></div>
@@ -280,6 +313,18 @@
           <span id="sidebar-width-val">220px</span>
         </div>
 
+        <div class="theme-section-label" style="margin-top:16px">UI Font Scale</div>
+        <div class="slider-wrap">
+          <input type="range" min="85" max="125" value="100" id="ui-font-slider" class="range-slider">
+          <span id="ui-font-val">100%</span>
+        </div>
+
+        <div class="theme-section-label" style="margin-top:16px">Mail Font Size</div>
+        <div class="slider-wrap">
+          <input type="range" min="12" max="20" value="14" id="mail-font-slider" class="range-slider">
+          <span id="mail-font-val">14px</span>
+        </div>
+
         <div class="theme-section-label" style="margin-top:16px">Wallpaper Blur</div>
         <div class="slider-wrap">
           <input type="range" min="0" max="20" value="0" step="1" id="bg-blur-slider" class="range-slider">
@@ -290,6 +335,42 @@
         <div class="slider-wrap">
           <input type="range" min="0.1" max="1" step="0.05" value="0.88" id="bg-opacity-slider" class="range-slider">
           <span id="bg-opacity-val">88%</span>
+        </div>
+
+        <div class="theme-section-label" style="margin-top:16px">Notifications</div>
+        <label class="rule-label" style="font-size:12px;">
+          <input type="checkbox" id="notif-show-details" class="rule-chk" checked>
+          Show sender + subject in notifications
+        </label>
+
+        <div class="theme-section-label" style="margin-top:16px">Security</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <button class="toolbar-btn" id="change-master-btn">Change Master Password</button>
+          <span class="compose-status" id="master-change-status"></span>
+        </div>
+
+        <div id="settings-ai-section" class="theme-section-label" style="margin-top:20px">AI Analysis</div>
+        <div class="fg">
+          <label>AI Provider</label>
+          <select id="settings-ai-provider" class="fg-select">
+            <option value="auto">Auto (Chrome AI → API → heuristic)</option>
+            <option value="chrome">Chrome AI only (Gemini Nano)</option>
+            <option value="anthropic">Anthropic Claude API</option>
+            <option value="openai">OpenAI / compatible API</option>
+            <option value="heuristic">Local heuristic only</option>
+          </select>
+        </div>
+        <div class="fg"><label>API Key</label><input type="password" id="settings-ai-api-key" placeholder="sk-…" class="fg-input"></div>
+        <div class="fg" id="settings-ai-baseurl-row">
+          <label>Base URL <span style="color:var(--text3)">(OpenAI-compatible)</span></label>
+          <input type="text" id="settings-ai-base-url" placeholder="https://api.openai.com" class="fg-input">
+        </div>
+        <div class="fg"><label>Model <span style="color:var(--text3)">(optional)</span></label>
+          <input type="text" id="settings-ai-model" placeholder="gpt-4o-mini / claude-haiku-…" class="fg-input">
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <button class="toolbar-btn" id="settings-ai-save">Save AI Settings</button>
+          <span class="compose-status" id="settings-ai-status"></span>
         </div>
       </div>
     </div>
@@ -308,6 +389,38 @@
         <div class="rule-row simple"><label class="rule-label"><input type="checkbox" id="r-dupes" class="rule-chk" checked> Remove Duplicate Emails</label></div>
         <div class="rule-row simple"><label class="rule-label"><input type="checkbox" id="r-aiscam" class="rule-chk"> Auto-delete AI HIGH-risk scams</label></div>
         <button class="save-btn" id="save-rules-btn">Save Filters</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Move Rules ══ -->
+  <div class="overlay hidden" id="move-rules-overlay">
+    <div class="overlay-card">
+      <div class="ov-header"><span>📂 Move-to-Folder Rules</span><button class="ov-close" data-close="move-rules-overlay">×</button></div>
+      <div class="ov-body">
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px">Auto-move matching emails to a folder. Rules run on folder load.</p>
+        <div id="mr-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;max-height:260px;overflow-y:auto;min-height:40px;"></div>
+        <button class="toolbar-btn" id="mr-add-btn">&#xFF0B; New Rule</button>
+        <div id="mr-edit-panel" class="mr-edit-panel hidden" style="margin-top:16px;">
+          <input type="hidden" id="mr-id">
+          <div class="fg"><label>Rule name</label><input type="text" id="mr-name" class="fg-input" placeholder="e.g. Newsletters"></div>
+          <div class="fg"><label>Match field</label>
+            <select id="mr-field" class="fg-select">
+              <option value="subject">Subject</option>
+              <option value="from">From address</option>
+              <option value="domain">Sender domain</option>
+              <option value="name">Sender name</option>
+              <option value="body">Body keyword</option>
+            </select>
+          </div>
+          <div class="fg"><label>Keywords <span style="color:var(--text3)">(comma-separated)</span></label>
+            <input type="text" id="mr-keywords" class="fg-input" placeholder="newsletter, promo, unsubscribe"></div>
+          <div class="fg"><label>Move to folder</label><select id="mr-target" class="fg-select"></select></div>
+          <div style="display:flex;gap:8px;margin-top:12px;">
+            <button class="save-btn" id="mr-save-btn">Save Rule</button>
+            <button class="toolbar-btn" id="mr-cancel-btn">Cancel</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -337,9 +450,11 @@
         <div class="fg">
           <label>AI Provider</label>
           <select id="ai-provider" class="fg-select">
-            <option value="heuristic">Local heuristic (no API needed)</option>
+            <option value="auto">Auto (Chrome AI → API → heuristic)</option>
+            <option value="chrome">Chrome AI only (Gemini Nano)</option>
             <option value="anthropic">Anthropic Claude API</option>
             <option value="openai">OpenAI / compatible API</option>
+            <option value="heuristic">Local heuristic only</option>
           </select>
         </div>
         <div class="fg"><label>API Key</label><input type="password" id="ai-api-key" placeholder="sk-…" class="fg-input"></div>

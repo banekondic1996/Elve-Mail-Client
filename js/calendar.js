@@ -21,21 +21,9 @@ const Calendar = (() => {
     return val;
   }
 
-function save() {
-  try {
-    localStorage.setItem(
-      KEY,
-      JSON.stringify(
-        calendars.map(c => ({
-          name: c.name,
-          url: c.url,
-          color: c.color,
-          events: c.events || []
-        }))
-      )
-    );
-  } catch (e) {}
-}
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(calendars.map(c=>({name:c.name,url:c.url,color:c.color,events:c.events||[]})))); } catch(e) {}
+  }
 
   // ── Parse ICS text ────────────────────────────────────────────────────────
   function parseICS(icsText, calName, calColor) {

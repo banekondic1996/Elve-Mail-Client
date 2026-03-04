@@ -19,7 +19,7 @@ const Themes = (() => {
   const KEY   = 'elve_theme_v5';
   const BGKEY = 'elve_bg_image';
 
-  let cur = { theme:'dark', bg:'none', sidebarW:220, tint:null, bgBlur:0, bgOpacity:0.88 };
+  let cur = { theme:'dark', bg:'none', sidebarW:220, tint:null, bgBlur:0, bgOpacity:0.88, uiScale:1, mailFont:14 };
 
   // ── #bg-layer — fixed div that holds the wallpaper ────────────────────────
   function _getBgLayer() {
@@ -71,9 +71,19 @@ const Themes = (() => {
     root.style.setProperty('--accent2',     _lighten(hex, 30));
     root.style.setProperty('--accent-bg',   `rgba(${r},${g},${b},0.1)`);
     root.style.setProperty('--accent-glow', `rgba(${r},${g},${b},0.3)`);
+    body.style.setProperty('--accent',      hex);
+    body.style.setProperty('--accent2',     _lighten(hex, 30));
+    body.style.setProperty('--accent-bg',   `rgba(${r},${g},${b},0.1)`);
+    body.style.setProperty('--accent-glow', `rgba(${r},${g},${b},0.3)`);
 
     // 4. Sidebar width
     root.style.setProperty('--sidebar-w', (cur.sidebarW || 220) + 'px');
+
+    // 4b. Font controls
+    const uiScale = Math.min(1.25, Math.max(0.85, Number(cur.uiScale) || 1));
+    const mailFont = Math.min(20, Math.max(12, parseInt(cur.mailFont, 10) || 14));
+    root.style.setProperty('--ui-scale', String(uiScale));
+    root.style.setProperty('--mail-font-size', `${mailFont}px`);
 
     // 5. Wallpaper — on #bg-layer (z-index:-1, behind everything)
     const img   = localStorage.getItem(BGKEY);
@@ -88,6 +98,7 @@ const Themes = (() => {
 
       // Make body background transparent so wallpaper shows through
       body.style.setProperty('background', 'transparent', 'important');
+      body.classList.add('has-wallpaper');
 
       // Pane opacity — make sidebar/list/reader semi-transparent
       const op = cur.bgOpacity !== undefined ? cur.bgOpacity : 0.88;
@@ -97,11 +108,13 @@ const Themes = (() => {
       layer.style.backgroundImage = 'none';
       layer.style.filter = 'none';
       body.style.removeProperty('background');
+      body.classList.remove('has-wallpaper');
       root.style.setProperty('--pane-opacity', '1');
     }
 
     // 6. Save to localStorage
     try { localStorage.setItem(KEY, JSON.stringify(cur)); } catch(e) {}
+    try { window.dispatchEvent(new CustomEvent('elve:theme-changed')); } catch(_) {}
   }
 
   // ── Colour helpers ────────────────────────────────────────────────────────
@@ -124,10 +137,12 @@ const Themes = (() => {
   }
   function setBgBlur(px)     { _apply({ bgBlur: Math.max(0, parseInt(px) || 0) }); }
   function setBgOpacity(v)   { _apply({ bgOpacity: Math.min(1, Math.max(0.1, parseFloat(v) || 0.88)) }); }
+  function setUiScale(v)     { _apply({ uiScale: Math.min(1.25, Math.max(0.85, parseFloat(v) || 1)) }); }
+  function setMailFont(px)   { _apply({ mailFont: Math.min(20, Math.max(12, parseInt(px, 10) || 14)) }); }
 
   // ── Picker builder ────────────────────────────────────────────────────────
   function buildPicker(opts) {
-    const { grid, bgOpts, swSlider, swVal, tintInput, tintReset, blurSlider, blurVal, opacitySlider, opacityVal } = opts;
+    const { grid, bgOpts, swSlider, swVal, tintInput, tintReset, blurSlider, blurVal, opacitySlider, opacityVal, uiSlider, uiVal, mailSlider, mailVal } = opts;
 
     if (grid) {
       grid.innerHTML = '';
@@ -138,8 +153,11 @@ const Themes = (() => {
         sw.addEventListener('click', () => {
           grid.querySelectorAll('.theme-swatch').forEach(s => s.classList.remove('active'));
           sw.classList.add('active');
-          _apply({ theme: t.id, tint: null });
-          if (tintInput) tintInput.value = t.acc;
+          _apply({ theme: t.id });
+          if (tintInput) {
+            const next = cur.tint || t.acc;
+            tintInput.value = next;
+          }
         });
         grid.appendChild(sw);
       });
@@ -162,6 +180,30 @@ const Themes = (() => {
       swSlider.oninput = () => {
         if (swVal) swVal.textContent = swSlider.value + 'px';
         _apply({ sidebarW: parseInt(swSlider.value) || 220 });
+      };
+    }
+
+    if (uiSlider) {
+      const pct = Math.round((cur.uiScale || 1) * 100);
+      uiSlider.min = 85; uiSlider.max = 125; uiSlider.step = 1;
+      uiSlider.value = String(pct);
+      if (uiVal) uiVal.textContent = `${pct}%`;
+      uiSlider.oninput = () => {
+        const p = parseInt(uiSlider.value, 10) || 100;
+        if (uiVal) uiVal.textContent = `${p}%`;
+        setUiScale(p / 100);
+      };
+    }
+
+    if (mailSlider) {
+      const px = parseInt(cur.mailFont, 10) || 14;
+      mailSlider.min = 12; mailSlider.max = 20; mailSlider.step = 1;
+      mailSlider.value = String(px);
+      if (mailVal) mailVal.textContent = `${px}px`;
+      mailSlider.oninput = () => {
+        const p = parseInt(mailSlider.value, 10) || 14;
+        if (mailVal) mailVal.textContent = `${p}px`;
+        setMailFont(p);
       };
     }
 
@@ -199,5 +241,5 @@ const Themes = (() => {
     }
   }
 
-  return { load, buildPicker, setBgImage, clearBgImage, setBgBlur, setBgOpacity };
+  return { load, buildPicker, setBgImage, clearBgImage, setBgBlur, setBgOpacity, setUiScale, setMailFont };
 })();

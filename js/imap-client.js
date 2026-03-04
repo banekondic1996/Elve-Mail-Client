@@ -23,7 +23,7 @@ const ImapEngine = (() => {
   };
 
   const PAGE_SIZE = 50;
-  const POLL_MS   = 60000;
+  const POLL_MS   = 15000;
   const DB_NAME   = 'elve_mail_v3';
   const DB_VER    = 1;
 
@@ -32,7 +32,9 @@ const ImapEngine = (() => {
   let bodyConn = null;
   let opConn   = null;
   let pollConn = null;
+  let adminConn = null;
   let cfg      = null;
+  let _listQueue = Promise.resolve();
 
   // ── In-memory caches (warm-loaded from IndexedDB on connect) ─────────────
   // headerCache: cacheKey → { messages[], total, totalPages, ts }
@@ -94,6 +96,14 @@ const ImapEngine = (() => {
 
   // ── Connect ───────────────────────────────────────────────────────────────
   async function connect(config) {
+    // If switching accounts, close old connections and wipe memory caches so the
+    // new account never sees stale headers/bodies from the previous one.
+    if (cfg && cfg.email !== config.email) {
+      [listConn,bodyConn,opConn,pollConn,adminConn].forEach(c=>{try{c?.end();}catch(_){}});
+      listConn=bodyConn=opConn=pollConn=adminConn=null;
+      _listQueue = Promise.resolve();
+      headerCache.clear(); bodyCache.clear(); allHdrs.clear();
+    }
     cfg = config;
     await _openDB();
     if (!_alive(listConn)) { listConn = await _mkConn(config); }
@@ -131,37 +141,45 @@ const ImapEngine = (() => {
   async function _ensureBody() { if (!_alive(bodyConn)) bodyConn = await _mkConn(cfg); }
   async function _ensureOp()   { if (!_alive(opConn))   opConn   = await _mkConn(cfg); }
   async function _ensurePoll() { if (!_alive(pollConn)) pollConn = await _mkConn(cfg); }
+  async function _ensureAdmin(){ if (!_alive(adminConn)) adminConn = await _mkConn(cfg); }
+
+  function _withListLock(fn) {
+    const run = _listQueue.then(fn, fn);
+    _listQueue = run.catch(() => {});
+    return run;
+  }
 
   function disconnect() {
     clearPoll();
-    [listConn, bodyConn, opConn, pollConn].forEach(c => { if (c) try { c.end(); } catch(_) {} });
-    listConn = bodyConn = opConn = pollConn = null;
+    [listConn, bodyConn, opConn, pollConn, adminConn].forEach(c => { if (c) try { c.end(); } catch(_) {} });
+    listConn = bodyConn = opConn = pollConn = adminConn = null;
+    _listQueue = Promise.resolve();
   }
 
   // ── List folders ──────────────────────────────────────────────────────────
   async function listFolders() {
-    await _ensureList();
-    return new Promise((res, rej) => {
-      listConn.getBoxes('', (err, boxes) => {
-        if (err) return rej(err);
-        const folders = [], seenSp = new Set();
-        function walk(tree, prefix) {
-          for (const [name, box] of Object.entries(tree || {})) {
-            const delim = box.delimiter || '/';
-            const path  = prefix ? prefix + delim + name : name;
-            const sp    = _detectSpecial(path, box.attribs || []);
-            if (sp !== 'folder') {
-              if (seenSp.has(sp)) { if (box.children) walk(box.children, path); continue; }
-              seenSp.add(sp);
+    await _ensureAdmin();
+      return new Promise((res, rej) => {
+        adminConn.getBoxes('', (err, boxes) => {
+          if (err) return rej(err);
+          const folders = [], seenSp = new Set();
+          function walk(tree, prefix) {
+            for (const [name, box] of Object.entries(tree || {})) {
+              const delim = box.delimiter || '/';
+              const path  = prefix ? prefix + delim + name : name;
+              const sp    = _detectSpecial(path, box.attribs || []);
+              if (sp !== 'folder') {
+                if (seenSp.has(sp)) { if (box.children) walk(box.children, path); continue; }
+                seenSp.add(sp);
+              }
+              folders.push({ path, name, special: sp });
+              if (box.children) walk(box.children, path);
             }
-            folders.push({ path, name, special: sp });
-            if (box.children) walk(box.children, path);
           }
-        }
-        walk(boxes, '');
-        res(folders);
+          walk(boxes, '');
+          res(folders);
+        });
       });
-    });
   }
 
   function _detectSpecial(path, attribs) {
@@ -176,57 +194,86 @@ const ImapEngine = (() => {
     return 'folder';
   }
 
+  function _isBadSequenceError(err) {
+    const m = String(err?.message || err || '').toLowerCase();
+    return m.includes('bad sequence') || m.includes('invalid messageset') || m.includes('invalid sequence');
+  }
+
   // ── fetchPage — CACHE-FIRST ───────────────────────────────────────────────
   // Serves from IndexedDB/memory; only hits IMAP if not yet cached.
   // forceRefresh=true: skip cache, fetch from IMAP, update cache.
   async function fetchPage(folder, page, onProgress, forceRefresh) {
-    page = Math.max(1, page || 1);
-    const hk = _hkey(folder, page);
+    return _withListLock(async () => {
+      page = Math.max(1, page || 1);
+      const hk = _hkey(folder, page);
 
-    // 1. Memory cache
-    if (!forceRefresh && headerCache.has(hk)) {
-      return headerCache.get(hk);
-    }
-
-    // 2. IndexedDB cache
-    if (!forceRefresh) {
-      const stored = await _dbGet('headers', hk);
-      if (stored && stored.messages && stored.messages.length) {
-        headerCache.set(hk, stored);
-        _mergeAllHdrs(folder, stored.messages);
-        return stored;
+      // 1. Memory cache
+      if (!forceRefresh && headerCache.has(hk)) {
+        return headerCache.get(hk);
       }
-    }
 
-    // 3. Fetch from IMAP
-    await _ensureList();
-    const box = await new Promise((res, rej) => {
-      listConn.openBox(folder, true, (err, b) => err ? rej(err) : res(b));
+      // 2. IndexedDB cache
+      if (!forceRefresh) {
+        const stored = await _dbGet('headers', hk);
+        if (stored && stored.messages && stored.messages.length) {
+          headerCache.set(hk, stored);
+          _mergeAllHdrs(folder, stored.messages);
+          return stored;
+        }
+      }
+
+      // 3. Fetch from IMAP
+      await _ensureList();
+      const box = await new Promise((res, rej) => {
+        listConn.openBox(folder, true, (err, b) => err ? rej(err) : res(b));
+      });
+
+      let total = box.messages.total || 0;
+      if (total === 0) {
+        const empty = { messages: [], total: 0, page: 1, totalPages: 1, ts: Date.now() };
+        headerCache.set(hk, empty);
+        await _dbPut('headers', hk, empty);
+        return empty;
+      }
+
+      let totalPages = Math.ceil(total / PAGE_SIZE);
+      let seqEnd     = total - (page - 1) * PAGE_SIZE;
+      let seqStart   = Math.max(1, seqEnd - PAGE_SIZE + 1);
+      if (seqEnd < 1) return { messages: [], total, page, totalPages, ts: Date.now() };
+
+      onProgress && onProgress({ seqStart, seqEnd, total });
+      let messages;
+      try {
+        messages = await _fetchHeaders(`${seqStart}:${seqEnd}`, folder);
+      } catch (err) {
+        if (!_isBadSequenceError(err)) throw err;
+        // Mailbox changed mid-fetch (expunge/new mail). Re-open and recompute once.
+        const box2 = await new Promise((res, rej) => {
+          listConn.openBox(folder, true, (e, b) => e ? rej(e) : res(b));
+        });
+        total = box2.messages.total || 0;
+        if (total === 0) {
+          const empty = { messages: [], total: 0, page: 1, totalPages: 1, ts: Date.now() };
+          headerCache.set(hk, empty);
+          await _dbPut('headers', hk, empty);
+          return empty;
+        }
+        totalPages = Math.ceil(total / PAGE_SIZE);
+        seqEnd   = total - (page - 1) * PAGE_SIZE;
+        seqStart = Math.max(1, seqEnd - PAGE_SIZE + 1);
+        if (seqEnd < 1) return { messages: [], total, page, totalPages, ts: Date.now() };
+        onProgress && onProgress({ seqStart, seqEnd, total });
+        messages = await _fetchHeaders(`${seqStart}:${seqEnd}`, folder);
+      }
+      messages.sort((a, b) => b.date - a.date);
+
+      const result = { messages, total, page, totalPages, ts: Date.now() };
+      headerCache.set(hk, result);
+      _mergeAllHdrs(folder, messages);
+      _dbPut('headers', hk, result).catch(() => {});
+
+      return result;
     });
-
-    const total = box.messages.total || 0;
-    if (total === 0) {
-      const empty = { messages: [], total: 0, page: 1, totalPages: 1, ts: Date.now() };
-      headerCache.set(hk, empty);
-      await _dbPut('headers', hk, empty);
-      return empty;
-    }
-
-    const totalPages = Math.ceil(total / PAGE_SIZE);
-    const seqEnd     = total - (page - 1) * PAGE_SIZE;
-    const seqStart   = Math.max(1, seqEnd - PAGE_SIZE + 1);
-    if (seqEnd < 1) return { messages: [], total, page, totalPages, ts: Date.now() };
-
-    onProgress && onProgress({ seqStart, seqEnd, total });
-    const messages = await _fetchHeaders(`${seqStart}:${seqEnd}`, folder);
-    messages.sort((a, b) => b.date - a.date);
-
-    const result = { messages, total, page, totalPages, ts: Date.now() };
-    headerCache.set(hk, result);
-    _mergeAllHdrs(folder, messages);
-    _dbPut('headers', hk, result).catch(() => {});
-
-    return result;
   }
 
   function _mergeAllHdrs(folder, messages) {
@@ -244,12 +291,21 @@ const ImapEngine = (() => {
   }
 
   // ── _fetchHeaders ─────────────────────────────────────────────────────────
-  function _fetchHeaders(range, folder) {
+  function _fetchHeaders(range, folder, useUid) {
     return new Promise((resolve, reject) => {
-      const f = listConn.seq.fetch(range, {
-        bodies: ['HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID LIST-UNSUBSCRIBE CONTENT-TYPE)'],
+      let finished = false;
+      const done = fn => arg => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        fn(arg);
+      };
+      const fetcher = useUid ? listConn.fetch.bind(listConn) : listConn.seq.fetch.bind(listConn);
+      const f = fetcher(range, {
+        bodies: ['HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST CONTENT-TYPE)'],
         markSeen: false, struct: true,
       });
+      const timer = setTimeout(done(reject), 30000, new Error('IMAP fetch timed out'));
       const msgs = [];
       f.on('message', (msg, seqno) => {
         const m = { seqno, uid: null, flags: [], folder };
@@ -266,14 +322,15 @@ const ImapEngine = (() => {
           m.unread      = !m.flags.includes('\\Seen');
           m.id          = `${folder}::${m.uid || m.seqno}`;
           m.listUnsub   = h['list-unsubscribe'] || '';
+          m.listUnsubPost = h['list-unsubscribe-post'] || '';
           m.hasAttachment = _structHasAttachment(m.struct) ||
             /multipart\/(mixed|related)/i.test(h['content-type'] || '');
           delete m.struct;
           msgs.push(m);
         });
       });
-      f.once('error', reject);
-      f.once('end', () => resolve(msgs));
+      f.once('error', done(reject));
+      f.once('end', done(() => resolve(msgs)));
     });
   }
 
@@ -347,6 +404,7 @@ const ImapEngine = (() => {
               const bd = {
                 html: p.html || null, text: p.text || null,
                 listUnsub: p.headers?.get('list-unsubscribe') || '',
+                listUnsubPost: p.headers?.get('list-unsubscribe-post') || '',
                 attachments: (p.attachments || []).map(a => ({
                   filename: a.filename || 'attachment',
                   contentType: a.contentType || 'application/octet-stream',
@@ -361,7 +419,7 @@ const ImapEngine = (() => {
               _dbPut('bodies', bk, toStore).catch(() => {});
             } catch(e) {
               const bi = raw.indexOf('\r\n\r\n');
-              const bd = { html: null, listUnsub: '', text: bi >= 0 ? raw.slice(bi+4) : raw, attachments: [] };
+              const bd = { html: null, listUnsub: '', listUnsubPost: '', text: bi >= 0 ? raw.slice(bi+4) : raw, attachments: [] };
               bodyCache.set(bk, bd);
               _dbPut('bodies', bk, bd).catch(() => {});
             }
@@ -410,6 +468,7 @@ const ImapEngine = (() => {
           const bd = {
             html: p.html || null, text: p.text || null,
             listUnsub: p.headers?.get('list-unsubscribe') || '',
+            listUnsubPost: p.headers?.get('list-unsubscribe-post') || '',
             attachments: (p.attachments || []).map(a => ({
               filename: a.filename || 'attachment',
               contentType: a.contentType || 'application/octet-stream',
@@ -421,7 +480,7 @@ const ImapEngine = (() => {
           resolve(bd);
         } catch(e) {
           const bi = raw.indexOf('\r\n\r\n');
-          const bd = { html: null, text: bi >= 0 ? raw.slice(bi+4) : raw, attachments: [], listUnsub: '' };
+          const bd = { html: null, text: bi >= 0 ? raw.slice(bi+4) : raw, attachments: [], listUnsub: '', listUnsubPost: '' };
           bodyCache.set(bk, bd);
           _dbPut('bodies', bk, bd).catch(() => {});
           resolve(bd);
@@ -457,44 +516,102 @@ const ImapEngine = (() => {
     if (ahMap) for (const uid of uids) ahMap.delete(uid);
   }
 
-  async function trashMessages(folder, uids) {
+  async function _resolveSpecialFolder(special, fallbackPath) {
+    try {
+      const folders = await listFolders();
+      const bySpecial = folders.find(f => f.special === special);
+      if (bySpecial?.path) return bySpecial.path;
+      const want = (fallbackPath || '').toLowerCase();
+      const byPath = folders.find(f => (f.path || '').toLowerCase() === want);
+      if (byPath?.path) return byPath.path;
+    } catch(_) {}
+    return fallbackPath;
+  }
+
+  async function _moveWithFallback(fromFolder, uids, targetFolder) {
     if (!uids?.length) return;
     await _ensureOp();
     return new Promise((res, rej) => {
-      opConn.openBox(folder, false, err => {
+      opConn.openBox(fromFolder, false, err => {
         if (err) return rej(err);
-        opConn.copy(uids, _trashFolder(), () => {
-          opConn.addFlags(uids, ['\\Deleted'], () => {
-            opConn.expunge(() => { _evict(folder, uids); res(); });
+
+        const done = () => { _evict(fromFolder, uids); res(); };
+        const fail = e => rej(e || new Error('Move failed'));
+
+        const copyDelete = () => {
+          opConn.copy(uids, targetFolder, copyErr => {
+            if (copyErr) return fail(copyErr);
+            opConn.addFlags(uids, ['\\Deleted'], flagErr => {
+              if (flagErr) return fail(flagErr);
+              opConn.expunge(expErr => {
+                if (expErr) return fail(expErr);
+                done();
+              });
+            });
           });
-        });
+        };
+
+        if (typeof opConn.move === 'function') {
+          opConn.move(uids, targetFolder, moveErr => {
+            if (!moveErr) return done();
+            copyDelete();
+          });
+        } else {
+          copyDelete();
+        }
       });
     });
   }
 
+  async function trashMessages(folder, uids) {
+    if (!uids?.length) return;
+    const target = await _resolveSpecialFolder('trash', _trashFolder());
+    return _moveWithFallback(folder, uids, target);
+  }
+
   async function markSpam(folder, uids) {
-    await _ensureOp();
-    return new Promise((res, rej) => {
-      opConn.openBox(folder, false, err => {
-        if (err) return rej(err);
-        opConn.copy(uids, _spamFolder(), () => {
-          opConn.addFlags(uids, ['\\Deleted'], () => opConn.expunge(() => { _evict(folder, uids); res(); }));
-        });
-      });
-    });
+    if (!uids?.length) return;
+    const target = await _resolveSpecialFolder('spam', _spamFolder());
+    return _moveWithFallback(folder, uids, target);
+  }
+
+  async function moveToFolder(fromFolder, uids, targetFolder) {
+    if (!uids?.length || !targetFolder) return;
+    return _moveWithFallback(fromFolder, uids, targetFolder);
   }
 
   async function archiveMessages(folder, uids) {
     if (!uids?.length) return;
-    await _ensureOp();
-    return new Promise((res, rej) => {
-      opConn.openBox(folder, false, err => {
-        if (err) return rej(err);
-        opConn.copy(uids, _archiveFolder(), copyErr => {
-          if (copyErr) { opConn.addFlags(uids, ['\\Seen'], () => res()); return; }
-          opConn.addFlags(uids, ['\\Deleted'], () => {
-            opConn.expunge(() => { _evict(folder, uids); res(); });
-          });
+    const target = await _resolveSpecialFolder('archive', _archiveFolder());
+    try {
+      await _moveWithFallback(folder, uids, target);
+    } catch(e) {
+      // If archive is unavailable on this provider, at least mark as read.
+      await _ensureOp();
+      await new Promise(resolve => {
+        opConn.openBox(folder, false, err => {
+          if (err) return resolve();
+          opConn.addFlags(uids, ['\\Seen'], () => resolve());
+        });
+      });
+    }
+  }
+
+  async function fetchRawSource(folder, uid) {
+    if (!uid) return { raw: '', headers: '', body: '' };
+    await _ensureBody();
+    await new Promise((res, rej) => { bodyConn.openBox(folder, true, e => e ? rej(e) : res()); });
+    return new Promise((resolve, reject) => {
+      const f = bodyConn.fetch([uid], { bodies: [''], markSeen: false });
+      let raw = '';
+      f.on('message', m => m.on('body', s => s.on('data', c => raw += c)));
+      f.once('error', reject);
+      f.once('end', () => {
+        const bi = raw.indexOf('\r\n\r\n');
+        resolve({
+          raw,
+          headers: bi >= 0 ? raw.slice(0, bi) : raw,
+          body: bi >= 0 ? raw.slice(bi + 4) : '',
         });
       });
     });
@@ -505,59 +622,217 @@ const ImapEngine = (() => {
   function startPoll(folder, callback) {
     clearPoll();
     let lastTotal = -1;
+    let softCheckTicks = 0;
+    const emit = payload => {
+      try { Promise.resolve(callback(payload)).catch(() => {}); } catch(_) {}
+    };
     pollTimer = setInterval(async () => {
       try {
         await _ensurePoll();
         pollConn.status(folder, (err, info) => {
-          if (err || !info) return;
+          if (err || !info) {
+            softCheckTicks = 0;
+            emit({ newCount: 0, total: lastTotal, forceCheck: true });
+            return;
+          }
           const n = typeof info.messages === 'number' ? info.messages : (info.messages?.total ?? 0);
-          if (lastTotal >= 0 && n > lastTotal) callback({ newCount: n - lastTotal, total: n });
+          if (lastTotal >= 0 && n > lastTotal) {
+            softCheckTicks = 0;
+            emit({ newCount: n - lastTotal, total: n });
+          } else {
+            softCheckTicks++;
+            // Status can be stale on some servers: run a periodic UID-based check.
+            if (softCheckTicks >= 4) {
+              softCheckTicks = 0;
+              emit({ newCount: 0, total: n, forceCheck: true });
+            }
+          }
           lastTotal = n;
         });
-      } catch(e) {}
+      } catch(e) {
+        softCheckTicks = 0;
+        emit({ newCount: 0, total: lastTotal, forceCheck: true });
+      }
     }, POLL_MS);
   }
   function clearPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
   async function fetchNewest(folder, sinceUid) {
-    await _ensureList();
-    const box = await new Promise((res, rej) => {
-      listConn.openBox(folder, true, (e, b) => e ? rej(e) : res(b));
+    await _ensurePoll();
+    let box = await new Promise((res, rej) => {
+      pollConn.openBox(folder, true, (e, b) => e ? rej(e) : res(b));
     });
-    const total = box.messages.total; if (!total) return [];
-    const start = Math.max(1, total - 20 + 1);
-    const msgs  = await _fetchHeaders(`${start}:${total}`, folder);
+    let total = box.messages.total;
+    if (!total) return [];
+
+    let start = Math.max(1, total - 20 + 1);
+    let msgs;
+    try {
+      msgs = await _fetchHeadersViaConn(pollConn, `${start}:${total}`, folder, false);
+    } catch (err) {
+      if (!_isBadSequenceError(err)) throw err;
+      box = await new Promise((res, rej) => {
+        pollConn.openBox(folder, true, (e, b) => e ? rej(e) : res(b));
+      });
+      total = box.messages.total;
+      if (!total) return [];
+      start = Math.max(1, total - 20 + 1);
+      msgs = await _fetchHeadersViaConn(pollConn, `${start}:${total}`, folder, false);
+    }
     if (msgs.length) _mergeAllHdrs(folder, msgs);
     return sinceUid ? msgs.filter(m => m.uid > sinceUid) : msgs;
   }
 
   // ── Search — local-first ──────────────────────────────────────────────────
-  async function searchFolder(folder, query, isFlagSearch) {
+  function _escapeRe(s) { return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  function _searchMatch(text, query, mode) {
+    const hay = String(text || '').toLowerCase();
+    const q = String(query || '').toLowerCase().trim();
+    if (!q) return true;
+    if (mode === 'exact') {
+      const re = new RegExp(`(^|\\W)${_escapeRe(q)}(\\W|$)`, 'i');
+      return re.test(hay);
+    }
+    return hay.includes(q);
+  }
+  function _searchMsgLocal(msg, query, opts) {
+    const field = opts?.field || 'all';
+    const mode = opts?.match || 'contains';
+    const folder = msg.folder || '';
+    const uid = msg.uid;
+    const cached = uid ? bodyCache.get(_bkey(folder, uid)) : null;
+    const body = ((cached?.text || cached?.html || '').replace(/<[^>]+>/g, ' ')).slice(0, 4000);
+    const blobs = {
+      subject: msg.subject || '',
+      from: msg.from || '',
+      body,
+      all: [msg.subject || '', msg.from || '', body].join(' '),
+    };
+    return _searchMatch(blobs[field] ?? blobs.all, query, mode);
+  }
+
+  async function searchFolder(folder, query, isFlagSearch, opts) {
     if (!isFlagSearch) {
       const cached = getAllCachedHeaders(folder);
       if (cached.length > 0) {
-        const lq = query.toLowerCase();
-        return cached.filter(m =>
-          (m.subject || '').toLowerCase().includes(lq) ||
-          (m.from    || '').toLowerCase().includes(lq)
-        );
+        return cached.filter(m => _searchMsgLocal(m, query, opts));
       }
     }
     // IMAP fallback
-    await _ensureList();
-    await new Promise((res, rej) => {
-      listConn.openBox(folder, true, e => e ? rej(e) : res());
+    return _withListLock(async () => {
+      await _ensureList();
+      await new Promise((res, rej) => {
+        listConn.openBox(folder, true, e => e ? rej(e) : res());
+      });
+      const criteria = (() => {
+        if (isFlagSearch) return [query];
+        const field = opts?.field || 'all';
+        if (field === 'subject') return [['SUBJECT', query]];
+        if (field === 'from') return [['FROM', query]];
+        if (field === 'body') return [['BODY', query]];
+        return [['OR', ['OR', ['SUBJECT', query], ['FROM', query]], ['BODY', query]]];
+      })();
+      return new Promise((resolve, reject) => {
+        listConn.search(criteria, async (err, uids) => {
+          if (err) return reject(err);
+          if (!uids.length) return resolve([]);
+          const uidSet = uids.slice(-100);
+          const msgs = await _fetchHeaders(uidSet, folder, true).catch(() => []);
+          msgs.sort((a, b) => b.date - a.date);
+          resolve(isFlagSearch ? msgs : msgs.filter(m => _searchMsgLocal(m, query, opts)));
+        });
+      });
     });
-    const criteria = isFlagSearch
-      ? [query]
-      : [['OR', ['OR', ['SUBJECT', query], ['FROM', query]], ['BODY', query]]];
+  }
+
+  function _fetchHeadersViaConn(conn, range, folder, useUid) {
     return new Promise((resolve, reject) => {
-      listConn.search(criteria, async (err, uids) => {
+      let finished = false;
+      const done = fn => arg => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        fn(arg);
+      };
+      const fetcher = useUid ? conn.fetch.bind(conn) : conn.seq.fetch.bind(conn);
+      const f = fetcher(range, {
+        bodies: ['HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST CONTENT-TYPE)'],
+        markSeen: false, struct: true,
+      });
+      const timer = setTimeout(done(reject), 30000, new Error('IMAP fetch timed out'));
+      const msgs = [];
+      f.on('message', (msg, seqno) => {
+        const m = { seqno, uid: null, flags: [], folder };
+        let hdr = '';
+        msg.on('body', s => { let b = ''; s.on('data', c => b += c); s.once('end', () => hdr = b); });
+        msg.once('attributes', a => { m.uid = a.uid; m.flags = a.flags || []; m.struct = a.struct; });
+        msg.once('end', () => {
+          const h       = _parseHdr(hdr);
+          m.from        = _mime(h.from || '');
+          m.to          = _mime(h.to || '');
+          m.subject     = _mime(h.subject || '(no subject)');
+          m.messageId   = h['message-id'] || '';
+          m.date        = h.date ? new Date(h.date) : new Date(0);
+          m.unread      = !m.flags.includes('\\Seen');
+          m.id          = `${folder}::${m.uid || m.seqno}`;
+          m.listUnsub   = h['list-unsubscribe'] || '';
+          m.listUnsubPost = h['list-unsubscribe-post'] || '';
+          m.hasAttachment = _structHasAttachment(m.struct) ||
+            /multipart\/(mixed|related)/i.test(h['content-type'] || '');
+          delete m.struct;
+          msgs.push(m);
+        });
+      });
+      f.once('error', done(reject));
+      f.once('end', done(() => resolve(msgs)));
+    });
+  }
+
+  async function createFolder(path) {
+    const p = (path || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!p) throw new Error('Folder name is required');
+    await _ensureAdmin();
+    return new Promise((resolve, reject) => {
+      adminConn.addBox(p, err => {
+        if (!err) return resolve(p);
+        if (/exists/i.test(err.message || '')) return resolve(p);
+        reject(err);
+      });
+    });
+  }
+
+  function _clearAccountCacheMemory() {
+    headerCache.clear();
+    bodyCache.clear();
+    allHdrs.clear();
+  }
+
+  async function renameFolder(fromPath, toPath) {
+    const from = (fromPath || '').trim().replace(/^\/+|\/+$/g, '');
+    const to = (toPath || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!from || !to) throw new Error('Both source and target folder are required');
+    if (from.toLowerCase() === 'inbox') throw new Error('Cannot rename INBOX');
+    if (from === to) return to;
+    await _ensureAdmin();
+    return new Promise((resolve, reject) => {
+      adminConn.renameBox(from, to, err => {
         if (err) return reject(err);
-        if (!uids.length) return resolve([]);
-        const msgs = await _fetchHeaders(uids.slice(-100).join(','), folder).catch(() => []);
-        msgs.sort((a, b) => b.date - a.date);
-        resolve(msgs);
+        _clearAccountCacheMemory();
+        resolve(to);
+      });
+    });
+  }
+
+  async function deleteFolder(path) {
+    const p = (path || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!p) throw new Error('Folder name is required');
+    if (p.toLowerCase() === 'inbox') throw new Error('Cannot delete INBOX');
+    await _ensureAdmin();
+    return new Promise((resolve, reject) => {
+      adminConn.delBox(p, err => {
+        if (err) return reject(err);
+        _clearAccountCacheMemory();
+        resolve(true);
       });
     });
   }
@@ -573,41 +848,71 @@ const ImapEngine = (() => {
     return { gmail:'[Gmail]/All Mail', yahoo:'Archive', outlook:'Archive', hotmail:'Archive', live:'Archive', icloud:'Archive' }[cfg?.provider] || 'Archive';
   }
 
-  // ── MIME decode ───────────────────────────────────────────────────────────
+  // ── MIME decode — pure-JS so Serbian/Cyrillic works in NW.js renderer ─────
   function _parseHdr(raw) {
     const h = {};
-    raw.replace(/\r\n[ \t]+/g, ' ').split('\r\n').forEach(line => {
-      const i = line.indexOf(':');
-      if (i > 0) h[line.slice(0,i).toLowerCase().trim()] = line.slice(i+1).trim();
+    raw.replace(/\r\n[ \t]+/g,' ').split('\r\n').forEach(line=>{
+      const i=line.indexOf(':');
+      if(i>0) h[line.slice(0,i).toLowerCase().trim()]=line.slice(i+1).trim();
     });
     return h;
+  }
+
+  // Decode bytes→string using TextDecoder (handles utf-8, iso-8859-*, windows-125*, etc.)
+  function _decodeBytes(bytes, charset) {
+    const cs=(charset||'utf-8').toLowerCase().replace(/windows-/,'cp');
+    const map={'iso-8859-1':'windows-1252','iso-8859-2':'windows-1250','latin1':'windows-1252',
+               'cp1250':'windows-1250','cp1251':'windows-1251','cp1252':'windows-1252',
+               'utf8':'utf-8'};
+    const label=map[cs]||cs;
+    try {
+      const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);
+      return new TextDecoder(label,{fatal:false}).decode(u8);
+    } catch(e) {
+      try {
+        const iconv=require('iconv-lite');
+        if(iconv.encodingExists(charset)){
+          const buf=typeof Buffer!=='undefined'?Buffer.from(bytes):Buffer.alloc(0);
+          return iconv.decode(buf,charset);
+        }
+      } catch(_) {}
+      // last resort: latin1
+      const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);
+      return [...u8].map(b=>String.fromCharCode(b)).join('');
+    }
+  }
+
+  function _b64ToBytes(str) {
+    try {
+      if(typeof Buffer!=='undefined') return Buffer.from(str,'base64');
+      const b=atob(str.replace(/\s/g,'')); const u=new Uint8Array(b.length);
+      for(let i=0;i<b.length;i++) u[i]=b.charCodeAt(i); return u;
+    } catch(e){ return new Uint8Array(0); }
   }
 
   function _mime(s) {
     if (!s) return '';
     try {
       return s.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=(\s*=\?[^?]+\?[BbQq]\?[^?]*\?=)*/g, full => {
-        const words = [], re = /=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g; let wm;
-        while ((wm = re.exec(full)) !== null) words.push({ cs: wm[1], enc: wm[2].toUpperCase(), txt: wm[3] });
-        return words.map(({ cs, enc, txt }) => {
+        const words=[],re=/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g; let wm;
+        while((wm=re.exec(full))!==null) words.push({cs:wm[1],enc:wm[2].toUpperCase(),txt:wm[3]});
+        return words.map(({cs,enc,txt})=>{
           try {
-            const charset = cs.toLowerCase();
-            if (enc === 'B') {
-              const buf = Buffer.from(txt, 'base64');
-              if (charset === 'utf-8' || charset === 'utf8') return buf.toString('utf8');
-              try { const iconv = require('iconv-lite'); if (iconv.encodingExists(charset)) return iconv.decode(buf, charset); } catch(_) {}
-              return buf.toString('latin1');
+            if(enc==='B') {
+              return _decodeBytes(_b64ToBytes(txt), cs);
             } else {
-              const raw = txt.replace(/_/g,' ').replace(/=([0-9A-Fa-f]{2})/g,(_,h)=>String.fromCharCode(parseInt(h,16)));
-              if (charset !== 'utf-8' && charset !== 'utf8' && charset !== 'us-ascii') {
-                try { const iconv = require('iconv-lite'); if (iconv.encodingExists(charset)) return iconv.decode(Buffer.from(raw,'latin1'), charset); } catch(_) {}
-              }
-              return raw;
+              // Quoted-Printable
+              const decoded=txt.replace(/_/g,' ').replace(/=([0-9A-Fa-f]{2})/g,(_,h)=>String.fromCharCode(parseInt(h,16)));
+              const csl=cs.toLowerCase();
+              if(csl==='utf-8'||csl==='utf8'||csl==='us-ascii') return decoded;
+              const bytes=new Uint8Array(decoded.length);
+              for(let i=0;i<decoded.length;i++) bytes[i]=decoded.charCodeAt(i)&0xff;
+              return _decodeBytes(bytes, cs);
             }
-          } catch(e) { return txt; }
+          } catch(e){ return txt; }
         }).join('');
       });
-    } catch(e) { return s; }
+    } catch(e){ return s; }
   }
 
   function extractAddr(from) {
@@ -618,6 +923,10 @@ const ImapEngine = (() => {
   }
 
   function getBodyCache() { return bodyCache; }
+  function getCachedBody(folder, uid) {
+    const bk = _bkey(folder, uid);
+    return bodyCache.get(bk) || null;
+  }
 
   function clearAllCache() {
     bodyCache.clear(); headerCache.clear(); allHdrs.clear();
@@ -629,9 +938,10 @@ const ImapEngine = (() => {
   return {
     connect, disconnect,
     listFolders, fetchPage, prefetchBodies, fetchBody,
-    trashMessages, markSpam, archiveMessages,
-    startPoll, clearPoll, fetchNewest, searchFolder,
-    getAllCachedHeaders,
+    trashMessages, markSpam, archiveMessages, moveToFolder,
+    startPoll, clearPoll, fetchNewest, searchFolder, createFolder, renameFolder, deleteFolder,
+    fetchRawSource, getAllCachedHeaders,
     extractAddr, extractName, PAGE_SIZE, getBodyCache, clearAllCache,
+    getCachedBody,
   };
 })();

@@ -14,24 +14,74 @@ const AI = (() => {
 
   async function analyse(msg) {
     const cfg = getCfg();
+    const provider = (cfg.provider || 'auto').toLowerCase();
 
-    // 1. Chrome AI (Gemini Nano) — available in NW.js with --enable-ai-api flag
-    if (typeof window !== 'undefined' && window.ai?.languageModel) {
-      try { return await _chromAI(msg); } catch(e) { console.warn('[AI] Chrome AI:', e.message); }
+    if (provider === 'chrome') {
+      return _tryChromeOnly(msg);
     }
 
-    // 2. Anthropic Claude API
-    if (cfg.provider === 'anthropic' && cfg.apiKey) {
-      try { return await _anthropicAPI(msg, cfg.apiKey); } catch(e) { console.warn('[AI] Anthropic:', e.message); }
+    if (provider === 'anthropic') {
+      if (!cfg.apiKey) {
+        return {
+          risk:'UNAVAILABLE',
+          summary:'Anthropic provider selected but API key is missing.',
+          indicators:['Open AI Settings and add your Anthropic API key.'],
+          engine:'Anthropic API',
+        };
+      }
+      try {
+        return await _anthropicAPI(msg, cfg.apiKey, cfg.model);
+      } catch(e) {
+        return {
+          risk:'ERROR',
+          summary:'Anthropic API request failed.',
+          indicators:[String(e?.message || 'Unknown API error').slice(0, 160)],
+          engine:'Anthropic API',
+        };
+      }
     }
 
-    // 3. OpenAI-compatible API (OpenAI, Groq, local Ollama, etc.)
-    if (cfg.provider === 'openai' && cfg.apiKey) {
-      try { return await _openaiAPI(msg, cfg.apiKey, cfg.baseUrl, cfg.model); } catch(e) { console.warn('[AI] OpenAI:', e.message); }
+    if (provider === 'openai') {
+      if (!cfg.apiKey) {
+        return {
+          risk:'UNAVAILABLE',
+          summary:'OpenAI-compatible provider selected but API key is missing.',
+          indicators:['Open AI Settings and add API key (and Base URL if needed).'],
+          engine:'OpenAI-compatible API',
+        };
+      }
+      try {
+        return await _openaiAPI(msg, cfg.apiKey, cfg.baseUrl, cfg.model);
+      } catch(e) {
+        return {
+          risk:'ERROR',
+          summary:'OpenAI-compatible API request failed.',
+          indicators:[String(e?.message || 'Unknown API error').slice(0, 160)],
+          engine:'OpenAI-compatible API',
+        };
+      }
     }
 
-    // 4. Heuristic fallback (always works, no network)
-    return _heuristic(msg);
+    if (provider === 'heuristic') {
+      return _heuristic(msg);
+    }
+
+    // Auto mode: Chrome AI -> API (if configured) -> heuristic
+    const chromeResult = await _tryChrome(msg);
+    if (chromeResult) return chromeResult;
+
+    if (cfg.apiKey) {
+      const wantsAnthropic = /^claude/i.test((cfg.model || '').trim());
+      if (wantsAnthropic) {
+        try { return await _anthropicAPI(msg, cfg.apiKey, cfg.model); } catch(_) {}
+      }
+      try { return await _openaiAPI(msg, cfg.apiKey, cfg.baseUrl, cfg.model); } catch(_) {}
+      if (!wantsAnthropic) {
+        try { return await _anthropicAPI(msg, cfg.apiKey, cfg.model); } catch(_) {}
+      }
+    }
+
+    return _heuristic(msg, 'Chrome AI/API unavailable');
   }
 
   // ── Chrome AI ─────────────────────────────────────────────────────────
@@ -54,14 +104,44 @@ const AI = (() => {
     return { ...JSON.parse(m[0]), engine:'Chrome AI (Gemini Nano)' };
   }
 
+  async function _tryChrome(msg) {
+    if (typeof window === 'undefined' || !window.ai?.languageModel) return null;
+    try {
+      return await _chromAI(msg);
+    } catch(_) {
+      return null;
+    }
+  }
+
+  async function _tryChromeOnly(msg) {
+    if (typeof window === 'undefined' || !window.ai?.languageModel) {
+      return {
+        risk:'UNAVAILABLE',
+        summary:'Chrome AI API is not available in this NW.js runtime.',
+        indicators:['Enable --enable-ai-api and install Gemini Nano in chrome://components.'],
+        engine:'Chrome AI',
+      };
+    }
+    try {
+      return await _chromAI(msg);
+    } catch(e) {
+      return {
+        risk:'ERROR',
+        summary:'Chrome AI failed to analyse this message.',
+        indicators:[String(e?.message || 'Unknown Chrome AI error').slice(0, 160)],
+        engine:'Chrome AI',
+      };
+    }
+  }
+
   // ── Anthropic API ─────────────────────────────────────────────────────
 
-  async function _anthropicAPI(msg, apiKey) {
+  async function _anthropicAPI(msg, apiKey, model) {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method:'POST',
       headers:{ 'Content-Type':'application/json', 'x-api-key':apiKey, 'anthropic-version':'2023-06-01' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001', max_tokens:300,
+        model: model || 'claude-3-5-haiku-latest', max_tokens:300,
         system: 'You are a cybersecurity expert. Respond ONLY with valid JSON, no markdown.',
         messages: [{ role:'user', content: _prompt(msg) }],
       }),
@@ -99,7 +179,7 @@ const AI = (() => {
 
   // ── Heuristic ─────────────────────────────────────────────────────────
 
-  function _heuristic(msg) {
+  function _heuristic(msg, reason) {
     const txt = [(msg.subject||''), (msg.from||''), (msg.rawBody||msg.body||'').slice(0,1500)].join(' ').toLowerCase();
     const HIGH = ['verify your account','confirm your identity','account suspended','you have won','prize','lottery','wire transfer','urgent action required','your password has been','dear customer','send money','gift card','paypal payment','bank account details','click here to claim','dear valued customer'];
     const MED  = ['unsubscribe','click here','free offer','act now','limited time','congratulations','dear user','account verification','update your info','social security','password reset','your account has been'];
@@ -112,7 +192,7 @@ const AI = (() => {
               : risk==='MEDIUM' ? 'Some suspicious patterns. Review before clicking links.'
               : 'Multiple high-risk scam signals detected — likely malicious.',
       indicators: [...h.slice(0,3),...m.slice(0,2)].map(s=>`"${s}" detected`),
-      engine: 'Local heuristic',
+      engine: reason ? `Local heuristic (${reason})` : 'Local heuristic',
     };
   }
 
@@ -132,7 +212,7 @@ const AI = (() => {
 
   // ── Config accessors ──────────────────────────────────────────────────
 
-  function getProvider()  { return getCfg().provider || 'heuristic'; }
+  function getProvider()  { return getCfg().provider || 'auto'; }
   function getApiKey()    { return getCfg().apiKey    || ''; }
   function getBaseUrl()   { return getCfg().baseUrl   || ''; }
   function getModel()     { return getCfg().model     || ''; }

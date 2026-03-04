@@ -15,11 +15,17 @@ const SmtpClient = (() => {
     aol:     { host:'smtp.aol.com',          port:587 },
   };
 
-  async function send(cfg, { to, subject, text, replyTo, attachments }) {
+  function _htmlToPlain(h) { return (h||'').replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&nbsp;/g,' '); }
+
+  async function send(cfg, { to, cc, bcc, subject, text, html, replyTo, attachments }) {
     if (!nodemailer) throw new Error('nodemailer not installed. Run: npm install');
     const domain = (cfg.email || '').split('@')[1]?.toLowerCase() || '';
     const key    = cfg.provider !== 'imap' ? cfg.provider : Object.keys(SERVERS).find(k => domain.includes(k)) || null;
     const srv    = (key && SERVERS[key]) || { host: cfg.smtpHost || cfg.host || '', port: 587 };
+
+    // fromAlias: send as a different address (Yahoo temp mail, aliases)
+    // SMTP auth still uses the real account credentials; only From header changes.
+    const fromAddr = cfg.fromAlias && cfg.fromAlias !== cfg.email ? cfg.fromAlias : cfg.email;
 
     const transporter = nodemailer.createTransport({
       host: srv.host, port: srv.port, secure: false,
@@ -28,9 +34,11 @@ const SmtpClient = (() => {
     });
 
     const mail = {
-      from: cfg.email, to, subject,
-      text: text || '',
-      replyTo: replyTo || cfg.email,
+      from: fromAddr, to, subject,
+      ...(cc  && cc.trim()  ? { cc }  : {}),
+      ...(bcc && bcc.trim() ? { bcc } : {}),
+      ...(html ? { html, text: text || _htmlToPlain(html) } : { text: text || '' }),
+      replyTo: replyTo || fromAddr,
     };
 
     // Attachments: array of { name, type, data (ArrayBuffer) }
