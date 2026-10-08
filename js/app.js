@@ -23,11 +23,16 @@ const App = (() => {
     inboxPath: 'INBOX',
     openMsgToken: 0,
     folderMeta: {},
+    selAllMsgs: null,   // set when 'Select all in folder' is active
+    sweepDone: new Set(),
   };
 
   // ── Boot ──────────────────────────────────────────────────────────────────
   function init() {
     Themes.load(); Rules.load(); Calendar.load(); _loadPersisted();
+    Rules.setBodyProvider(m => { const b = ImapEngine.getCachedBody?.(m.folder || S.folder, m.uid); return b ? (b.text || b.html || '') : ''; });
+    UI.setRowContextHandler(_rowMenu);
+    UI.setSelExitHandler(() => { S.selAllMsgs = null; document.getElementById('select-folder-btn')?.classList.add('hidden'); });
     _wireOverlays(); _wireApp(); Notifier.init();
     window.addEventListener('message', e => {
       if (!e.data) return;
@@ -170,14 +175,26 @@ const App = (() => {
       // Fall through: load cached folders/mail from IndexedDB
     }
 
-    try { S.folders = await ImapEngine.listFolders(); }
-    catch(e) { S.folders=[{path:'INBOX',name:'Inbox',special:'inbox'},{path:'Sent',name:'Sent',special:'sent'},{path:'Trash',name:'Trash',special:'trash'}]; }
-    S.inboxPath = S.folders.find(f => f.special === 'inbox')?.path || 'INBOX';
+    // Folder tree: last known list is rendered immediately (cached per account) and
+    // the server list is fetched in parallel with the inbox instead of before it.
+    const _fallbackFolders=[{path:'INBOX',name:'Inbox',special:'inbox'},{path:'Sent',name:'Sent',special:'sent'},{path:'Trash',name:'Trash',special:'trash'}];
+    const _setFolders = list => {
+      S.folders = list;
+      S.inboxPath = list.find(f => f.special === 'inbox')?.path || 'INBOX';
+      _renderNav();
+    };
+    const cachedFolders = ImapEngine.getCachedFolders(account.email);
+    if (cachedFolders) _setFolders(cachedFolders);
+    const foldersP = connected
+      ? ImapEngine.listFolders().then(f => { if (S.account === account) _setFolders(f); return f; }).catch(() => null)
+      : Promise.resolve(null);
+    if (!cachedFolders) { const f = await foldersP; if (!f) _setFolders(_fallbackFolders); }
     S.folder = S.inboxPath;
     _renderNav();
 
     // Always load inbox once from server; then stay cache-first.
     await _loadFolder(S.inboxPath, 1, true);
+    await foldersP;
 
     if (connected) {
       const inboxPath = S.inboxPath;
@@ -189,13 +206,24 @@ const App = (() => {
           return;
         }
         S.newestUid = Math.max(S.newestUid || 0, ...nm.map(m => m.uid || 0));
-        _learnContacts(nm);
-        Notifier.notifyBatch(nm.length, account.email, nm);
+        // Watch for keywords on arrival: body filters need the body, so fetch it first.
+        let fresh = nm;
+        if (Rules.hasActiveFilters()) {
+          if (Rules.needsBody()) await ImapEngine.prefetchBodies(inboxPath, nm.map(m => m.uid).filter(Boolean), null).catch(()=>{});
+          const r = _applyFilters(nm.filter(m => !S.allLoaded.some(x => x.id === m.id)));
+          fresh = nm.filter(m => !r.deleted.includes(m) && !r.moved.includes(m));
+          if (r.deleted.length) _batchDelete(inboxPath, r.deleted).catch(()=>{});
+          if (r.moved.length)   _batchMove(inboxPath, r.moved).catch(()=>{});
+        }
+        if (!fresh.length) return;
+        _learnContacts(fresh);
+        Notifier.notifyBatch(fresh.length, account.email, fresh);
         // Fetch into cache first (silent background), then slide in or show banner
-        if (S.folder===inboxPath) _prependMessages(nm, inboxPath);
-        else _showNewMailBanner(nm.length || newCount);
+        if (S.folder===inboxPath) _prependMessages(fresh, inboxPath);
+        else _showNewMailBanner(fresh.length || newCount);
       });
       _bgSyncAll().catch(()=>{});
+      _startupFilterSweep(account).catch(()=>{});
     }
   }
 
@@ -274,7 +302,7 @@ const App = (() => {
     S.preloadPromise = (async () => {
       for (const p of order) {
         if (!S.syncing) break;
-        try { await _bgSyncFolder(p); } catch(_) {}
+        try { await _bgSyncFolder(p, p === S.inboxPath ? undefined : BG_MAX_PAGES, true); } catch(_) {}
       }
     })();
     try {
@@ -286,7 +314,9 @@ const App = (() => {
     }
   }
 
-  async function _bgSyncFolder(folder, untilPage) {
+  const BG_MAX_PAGES = 6;   // background sync of non-inbox folders stops after 6 pages (300 mails); opening a folder syncs the rest
+  async function _bgSyncFolder(folder, untilPage, lowPriority) {
+    const bgOpt = { background: true };
     if (!folder) return;
     const PS = ImapEngine.PAGE_SIZE;
     const meta = S.folderMeta[folder] || {};
@@ -297,7 +327,7 @@ const App = (() => {
 
     // Ensure first page + totals exist.
     if (!totalPages || cachedPages === 0) {
-      const first = await ImapEngine.fetchPage(folder,1,null,cachedPages===0).catch(()=>null);
+      const first = await ImapEngine.fetchPage(folder,1,null,cachedPages===0,bgOpt).catch(()=>null);
       if (!first) { S.synced.delete(folder); return; }
       totalPages = first.totalPages || 1;
       totalMsgs = first.total || totalMsgs;
@@ -311,7 +341,7 @@ const App = (() => {
     for (let p = Math.max(1, cachedPages + 1); p <= target; p++) {
       let pageRes = null;
       for (let i=0; i<4 && !pageRes; i++) {
-        pageRes = await ImapEngine.fetchPage(folder, p, null, false).catch(()=>null);
+        pageRes = await ImapEngine.fetchPage(folder, p, null, false, bgOpt).catch(()=>null);
         if (!pageRes) await _sleep(90 + (i * 120));
       }
       if (!pageRes) { complete = false; break; }
@@ -337,9 +367,19 @@ const App = (() => {
     _on('rules-btn',_showRules); _on('move-rules-btn',_showMoveRules); _on('stats-btn',_showStats);
     _on('mr-add-btn',()=>_editMoveRule(null));
     _on('mr-save-btn',_saveMoveRule);
-    _on('mr-cancel-btn',()=>document.getElementById('mr-edit-form')?.classList.add('hidden'));
+    _on('mr-cancel-btn',()=>document.getElementById('mr-edit-panel')?.classList.add('hidden'));
     _on('refresh-folder-btn',()=>_loadFolder(S.folder,S.page,true));
     _on('bulk-delete-btn',_bulkDelete);
+    _on('select-mode-btn',_selectAllPage); _on('select-all-btn',_selectAllPage);
+    _on('select-folder-btn',_selectAllInFolder);
+    document.getElementById('mr-action')?.addEventListener('change',_syncFilterActionUI);
+    document.addEventListener('keydown',e=>{
+      if(!(e.ctrlKey||e.metaKey)||e.key.toLowerCase()!=='a') return;
+      const t=e.target; if(t&&(/^(input|textarea|select)$/i.test(t.tagName)||t.isContentEditable)) return;
+      if(document.querySelector('.overlay:not(.hidden)')) return;
+      if(!document.getElementById('app-screen')||document.getElementById('app-screen').classList.contains('hidden')) return;
+      e.preventDefault(); _selectAllPage();
+    });
     _on('uncheck-all-btn',()=>UI.exitSelectionMode());
 
     // Account chip — event delegation so it works at any time
@@ -601,7 +641,7 @@ const App = (() => {
           S.unread[folder]=S.messages.filter(m=>m.unread).length; _renderNav();
           UI.setSync('done',`${S.messages.length} shown`);
           const uids=S.messages.map(m=>m.uid).filter(Boolean);
-          if (uids.length) ImapEngine.prefetchBodies(folder,uids,null).catch(()=>{});
+          if (uids.length) ImapEngine.prefetchBodies(folder,uids,null).then(()=>_refilterVisible(folder)).catch(()=>{});
           if (deleted.length) _batchDelete(folder,deleted).catch(()=>{});
           if (moved.length)   _batchMove(folder,moved).catch(()=>{});
           _autoScanHighRisk(S.messages, folder).catch(()=>{});
@@ -635,6 +675,7 @@ const App = (() => {
         ImapEngine.prefetchBodies(folder,uids,({done,total})=>{
           if (done<total) { document.getElementById('sync-dot')?.setAttribute('class','sync-dot syncing'); _setTxt('sync-text',`Caching ${done}/${total}…`); }
         }).then(()=>{
+          _refilterVisible(folder);
           UI.setSync('done',`${S.messages.length} shown`);
           if (!S.synced.has(folder)) _bgSyncFolder(folder).catch(()=>{});
         }).catch(()=>UI.setSync('done',`${S.messages.length} shown`));
@@ -710,6 +751,7 @@ const App = (() => {
       const hits=Rules.check(msg);
       if (hits.length) { msg._deleteReason=`${hits[0].rule}:${hits[0].value}`;msg._kept=false;deleted.push(msg);UI.removeRow(msg.id);continue; }
       const mr=Rules.checkMove?.(msg);
+      if (mr && mr.action==='delete') { msg._deleteReason=`filter:${mr.name||'rule'}`;msg._kept=false;deleted.push(msg);UI.removeRow(msg.id);continue; }
       if (mr) { msg._moveTarget=mr.targetFolder;msg._kept=false;moved.push(msg);UI.removeRow(msg.id);continue; }
       msg._kept=true; kept.push(msg);
     }
@@ -780,7 +822,8 @@ const App = (() => {
     for (const [f,uids] of Object.entries(byF)) {
       if (!uids.length) continue;
       try {
-        await ImapEngine.trashMessages(f,uids); S.stats.deleted+=uids.length;
+        for (let i=0;i<uids.length;i+=300) await ImapEngine.trashMessages(f,uids.slice(i,i+300));
+        S.stats.deleted+=uids.length;
         messages.filter(m=>(m.folder||folder)===f).forEach(m=>{
           if (m._deleteReason==='duplicate') S.stats.dupes++;
           if ((m._deleteReason||'').includes('scam') || (m._deleteReason||'').includes('ai-high-risk')) S.stats.scams++;
@@ -969,12 +1012,126 @@ const App = (() => {
     Rules.save(rules); UI.setSync('done',`Blocked by ${by}`); _deleteActive();
   }
 
+  // ── Select all ────────────────────────────────────────────────────────────
+  function _folderPool() {
+    if (S.searchMode) return S.messages;
+    if (S.folder === '__unread__') return _unreadPool();
+    return ImapEngine.getAllCachedHeaders(S.folder);
+  }
+  function _selectAllPage() {
+    UI.selectAll();
+    const btn = document.getElementById('select-folder-btn');
+    if (!btn) return;
+    const more = UI.isSelMode() && _folderPool().length > UI.rowCount();
+    btn.classList.toggle('hidden', !more);
+    if (more) btn.textContent = `Select all ${_folderPool().length} in folder`;
+  }
+  function _selectAllInFolder() {
+    const pool = _folderPool(); if (!pool.length) return;
+    S.selAllMsgs = [...pool];
+    document.getElementById('select-folder-btn')?.classList.add('hidden');
+    _setTxt('sel-count', `${pool.length} selected (whole folder)`);
+  }
+
   async function _bulkDelete() {
     const ids=new Set(UI.getSelectedIds()); if (!ids.size) return;
-    const msgs=S.messages.filter(m=>ids.has(m.id));
+    let msgs, whole=false;
+    if (S.selAllMsgs && ids.size===UI.rowCount()) {
+      whole=true; msgs=S.selAllMsgs;
+      if (!confirm(`Move all ${msgs.length} messages in "${_folderLabel(S.folder)}" to Trash?`)) return;
+    } else msgs=S.messages.filter(m=>ids.has(m.id));
+    const gone=new Set(msgs.map(m=>m.id));
     msgs.forEach(m=>{ m._deleteReason='manual'; UI.removeRow(m.id); });
-    S.messages=S.messages.filter(m=>!ids.has(m.id)); S.allLoaded=S.allLoaded.filter(m=>!ids.has(m.id));
-    UI.exitSelectionMode(); await _batchDelete(S.folder,msgs);
+    S.messages=S.messages.filter(m=>!gone.has(m.id)); S.allLoaded=S.allLoaded.filter(m=>!gone.has(m.id));
+    UI.exitSelectionMode();
+    UI.setSync('syncing',`Deleting ${msgs.length}…`);
+    await _batchDelete(S.folder,msgs);
+    UI.setSync('done',`Deleted ${msgs.length}`);
+    if (whole) { S.synced.delete(S.folder); await _loadFolder(S.folder,1,true); }
+  }
+
+  // ── Right-click on a mail ─────────────────────────────────────────────────
+  function _rowMenu(msg, x, y) {
+    const addr = ImapEngine.extractAddr(msg.from||'');
+    const folder = msg.folder || S.folder;
+    const items = [{ label:'Delete this message', danger:true, onClick:()=>_deleteMsg(msg) }];
+    if (addr) items.push({ label:`Delete all from ${addr}`, danger:true, onClick:()=>_deleteAllFromSender(addr, folder) });
+    UI.showRowMenu(x, y, items);
+  }
+  async function _deleteMsg(msg) {
+    if (S.activeMsg?.id===msg.id) {
+      S.activeMsg=null;
+      document.getElementById('reader-empty')?.classList.remove('hidden');
+      document.getElementById('reader-view')?.classList.add('hidden');
+    }
+    UI.removeRow(msg.id); S.messages=S.messages.filter(m=>m.id!==msg.id); S.allLoaded=S.allLoaded.filter(m=>m.id!==msg.id);
+    msg._deleteReason='manual'; await _batchDelete(msg.folder||S.folder,[msg]);
+  }
+  async function _deleteAllFromSender(addr, folder) {
+    const sp = S.folders.find(f=>f.path===folder)?.special;
+    const permanent = sp==='trash';
+    const ok = confirm(`Delete ALL mail from ${addr} in "${_folderLabel(folder)}"?\n\n` +
+      (permanent ? 'This folder is Trash, so these messages will be deleted permanently.' : 'They will be moved to Trash.'));
+    if (!ok) return;
+    UI.setSync('syncing',`Finding mail from ${addr}…`);
+    try {
+      const n = await ImapEngine.deleteFromSender(folder, addr, permanent);
+      S.stats.deleted += n; _log('deleted', `${n} message(s) from ${addr} [sender]`); _savePersisted();
+      const from = m => ImapEngine.extractAddr(m.from||'')===addr;
+      S.messages = S.messages.filter(m=>!from(m)); S.allLoaded = S.allLoaded.filter(m=>!from(m));
+      if (S.activeMsg && from(S.activeMsg)) { S.activeMsg=null; document.getElementById('reader-empty')?.classList.remove('hidden'); document.getElementById('reader-view')?.classList.add('hidden'); }
+      S.synced.delete(folder);
+      UI.setSync('done', n ? `Deleted ${n} message${n>1?'s':''} from ${addr}` : `No mail from ${addr} found`);
+      if (n && S.folder===folder) await _loadFolder(folder, 1, true);
+    } catch(e) { UI.setSync('error','Delete failed: '+e.message); }
+  }
+
+  // ── Keyword filters: apply to loaded mail / run once at start ─────────────
+  function _filterOnly(msgs) {
+    const deleted=[], moved=[];
+    for (const m of msgs) {
+      const mr = Rules.checkMove(m); if (!mr) continue;
+      if (mr.action==='delete') { m._deleteReason=`filter:${mr.name||'rule'}`; deleted.push(m); }
+      else { m._moveTarget=mr.targetFolder; moved.push(m); }
+    }
+    return { deleted, moved };
+  }
+  async function _applyFilterResult(folder, { deleted, moved }) {
+    if (!deleted.length && !moved.length) return;
+    const gone=new Set([...deleted,...moved].map(m=>m.id));
+    gone.forEach(id=>UI.removeRow(id));
+    S.messages=S.messages.filter(m=>!gone.has(m.id)); S.allLoaded=S.allLoaded.filter(m=>!gone.has(m.id));
+    if (deleted.length) await _batchDelete(folder, deleted);
+    if (moved.length)   await _batchMove(folder, moved);
+    UI.setSync('done', `Filters: ${deleted.length} deleted, ${moved.length} moved`);
+  }
+  // Body keywords can only match once bodies are cached, so re-check what is on screen.
+  function _refilterVisible(folder, force) {
+    if (S.folder!==folder || !Rules.hasActiveFilters()) return;
+    if (!force && !Rules.needsBody()) return;
+    _applyFilterResult(folder, _filterOnly([...S.messages])).catch(()=>{});
+  }
+  // Once per app start / account connect: sweep the cached inbox.
+  async function _startupFilterSweep(account) {
+    if (!Rules.hasActiveFilters() || S.sweepDone.has(account.email)) return;
+    S.sweepDone.add(account.email);
+    const inbox = S.inboxPath;
+    await _bgSyncFolder(inbox, BG_MAX_PAGES, true).catch(()=>{});
+    if (S.account!==account) return;
+    const msgs = ImapEngine.getAllCachedHeaders(inbox);
+    if (!msgs.length) return;
+    if (Rules.needsBody()) {
+      UI.setSync('syncing','Running filters…');
+      await ImapEngine.prefetchBodies(inbox, msgs.map(m=>m.uid).filter(Boolean), null).catch(()=>{});
+      if (S.account!==account) return;
+    }
+    const res = _filterOnly(msgs);
+    if (S.folder===inbox) await _applyFilterResult(inbox, res);
+    else {
+      if (res.deleted.length) await _batchDelete(inbox, res.deleted);
+      if (res.moved.length)   await _batchMove(inbox, res.moved);
+      if (res.deleted.length||res.moved.length) UI.setSync('done', `Filters: ${res.deleted.length} deleted, ${res.moved.length} moved`);
+    }
   }
 
   async function _analyseActive() {
@@ -1431,7 +1588,7 @@ const App = (() => {
         <input type="checkbox" class="mr-enabled rule-chk" ${rule.enabled?'checked':''}>
         <div class="mr-row-info">
           <div class="mr-row-name">${UI.esc(rule.name||'Unnamed')}</div>
-          <div class="mr-row-meta">${UI.esc(rule.field||'subject')} contains "<em>${UI.esc((rule.keywords||[]).slice(0,3).join(', '))}</em>" → 📁 ${UI.esc(rule.targetFolder||'?')}</div>
+          <div class="mr-row-meta">${UI.esc(rule.field||'subject')} contains "<em>${UI.esc((rule.keywords||[]).slice(0,3).join(', '))}</em>"${(rule.exceptions||[]).length?` except "<em>${UI.esc(rule.exceptions.slice(0,3).join(', '))}</em>"`:''} → ${rule.action==='delete'?'🗑 delete':'📁 '+UI.esc(rule.targetFolder||'?')}</div>
         </div>
       </div>
       <div class="mr-row-btns">
@@ -1450,6 +1607,9 @@ const App = (() => {
     document.getElementById('mr-name').value=rule?.name||'';
     document.getElementById('mr-field').value=rule?.field||'subject';
     document.getElementById('mr-keywords').value=(rule?.keywords||[]).join(', ');
+    document.getElementById('mr-exceptions').value=(rule?.exceptions||[]).join(', ');
+    document.getElementById('mr-action').value=rule?.action==='delete'?'delete':'move';
+    _syncFilterActionUI();
     // Populate target folder dropdown from current account's folders
     const sel=document.getElementById('mr-target');
     sel.innerHTML=S.folders.filter(f=>f.special!=='inbox'||true).map(f=>`<option value="${UI.esc(f.path)}"${rule?.targetFolder===f.path?' selected':''}>${UI.esc(f.name||f.path)}</option>`).join('');
@@ -1463,13 +1623,21 @@ const App = (() => {
     const field=document.getElementById('mr-field').value;
     const kws=document.getElementById('mr-keywords').value.split(',').map(k=>k.trim()).filter(Boolean);
     const target=document.getElementById('mr-target').value;
-    if(!target){UI.setSync('error','Select a target folder');return;}
+    const action=document.getElementById('mr-action').value==='delete'?'delete':'move';
+    const exceptions=document.getElementById('mr-exceptions').value.split(',').map(k=>k.trim()).filter(Boolean);
+    if(action==='move'&&!target){UI.setSync('error','Select a target folder');return;}
     if(!kws.length){UI.setSync('error','Enter at least one keyword');return;}
-    const rule={id,name,enabled:true,field,keywords:kws,targetFolder:target};
+    const prev=id?Rules.getMoveRules().find(r=>r.id===id):null;
+    const rule={id,name,enabled:prev?prev.enabled!==false:true,field,keywords:kws,exceptions,action,targetFolder:action==='move'?target:''};
     if(id) Rules.updateMoveRule(id,rule); else Rules.addMoveRule(rule);
     document.getElementById('mr-edit-panel')?.classList.add('hidden');
     _renderMoveRulesList();
-    UI.setSync('done','Move rule saved');
+    UI.setSync('done','Filter saved');
+    _refilterVisible(S.folder, true);
+  }
+  function _syncFilterActionUI() {
+    const del=document.getElementById('mr-action')?.value==='delete';
+    document.getElementById('mr-target-wrap')?.classList.toggle('hidden',del);
   }
 
   async function _createFolder() {

@@ -122,7 +122,7 @@
       </div>
       <div class="sidebar-actions">
         <button class="sb-btn" id="rules-btn">⚙ Filters</button>
-        <button class="sb-btn" id="move-rules-btn">📂 Move Rules</button>
+        <button class="sb-btn" id="move-rules-btn">📂 Keyword Filters</button>
         <button class="sb-btn" id="stats-btn">📊 Stats</button>
       </div>
     </div>
@@ -138,10 +138,13 @@
       <div class="list-toolbar-right">
         <div class="selection-toolbar hidden" id="selection-toolbar">
           <span class="sel-count" id="sel-count">0 selected</span>
+          <button class="toolbar-btn" id="select-all-btn" title="Select / unselect everything on this page (Ctrl+A)">☑ All</button>
+          <button class="toolbar-btn hidden" id="select-folder-btn" title="Select every cached message in this folder">Select all in folder</button>
           <button class="toolbar-btn danger" id="bulk-delete-btn">🗑 Delete</button>
           <button class="toolbar-btn" id="uncheck-all-btn">✕ Cancel</button>
         </div>
         <div class="normal-toolbar" id="normal-toolbar">
+          <button class="toolbar-btn" id="select-mode-btn" title="Select all mail on this page (Ctrl+A)">☑ Select all</button>
           <button class="toolbar-btn" id="refresh-folder-btn">⟳ Refresh</button>
         </div>
       </div>
@@ -396,9 +399,9 @@
   <!-- ══ Move Rules ══ -->
   <div class="overlay hidden" id="move-rules-overlay">
     <div class="overlay-card">
-      <div class="ov-header"><span>📂 Move-to-Folder Rules</span><button class="ov-close" data-close="move-rules-overlay">×</button></div>
+      <div class="ov-header"><span>📂 Keyword Filters</span><button class="ov-close" data-close="move-rules-overlay">×</button></div>
       <div class="ov-body">
-        <p style="font-size:12px;color:var(--text3);margin-bottom:12px">Auto-move matching emails to a folder. Rules run on folder load.</p>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px">Delete or move mail that contains certain words, unless it also contains an exception word. Filters run once when the app starts, when a folder loads, and on every newly received mail.</p>
         <div id="mr-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;max-height:260px;overflow-y:auto;min-height:40px;"></div>
         <button class="toolbar-btn" id="mr-add-btn">&#xFF0B; New Rule</button>
         <div id="mr-edit-panel" class="mr-edit-panel hidden" style="margin-top:16px;">
@@ -411,11 +414,20 @@
               <option value="domain">Sender domain</option>
               <option value="name">Sender name</option>
               <option value="body">Body keyword</option>
+              <option value="any">Anywhere (subject, sender, body, unsubscribe header)</option>
             </select>
           </div>
           <div class="fg"><label>Keywords <span style="color:var(--text3)">(comma-separated)</span></label>
-            <input type="text" id="mr-keywords" class="fg-input" placeholder="newsletter, promo, unsubscribe"></div>
-          <div class="fg"><label>Move to folder</label><select id="mr-target" class="fg-select"></select></div>
+            <input type="text" id="mr-keywords" class="fg-input" placeholder="newsletter, unsubscribe"></div>
+          <div class="fg"><label>Except if it contains <span style="color:var(--text3)">(comma-separated, checked in subject, sender and body)</span></label>
+            <input type="text" id="mr-exceptions" class="fg-input" placeholder="Unity3d"></div>
+          <div class="fg"><label>Action</label>
+            <select id="mr-action" class="fg-select">
+              <option value="move">Move to folder</option>
+              <option value="delete">Delete (move to Trash)</option>
+            </select>
+          </div>
+          <div class="fg" id="mr-target-wrap"><label>Move to folder</label><select id="mr-target" class="fg-select"></select></div>
           <div style="display:flex;gap:8px;margin-top:12px;">
             <button class="save-btn" id="mr-save-btn">Save Rule</button>
             <button class="toolbar-btn" id="mr-cancel-btn">Cancel</button>

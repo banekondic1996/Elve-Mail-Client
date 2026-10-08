@@ -13,12 +13,12 @@ F' Microsoft, I have to make every app by myself i guess <br>
 -Tooltip for links, so you know the real link
 -Calendar that can load .ics 
 -Multiple mail accounts at same time
+-Keyword filters with exception words (delete or move to folder); run once on start and on every received mail
+-Select all mail (page or whole folder) for fast deleting
+-Right click a mail -> delete all mail from that sender
 </pre>
 **To fix:**<br>
 <pre>
--Add filtering option with keyword exceptions. Example filter all mail with "newsletter" or "unsubscribe" in it, but keep if it contains "Unity3d", also choose does it delete mail or move to other folder (run filtering once on app start when app not used, and watch for keywords when mails are recieved)
--Add option to select all mail, for faster deleting
--Add option to delete all mail from that sender
 -Tray icon functions to be fixed
 -Show received verification codes as notification
 -Calendar files messages not showing in visual format

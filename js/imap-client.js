@@ -106,7 +106,12 @@ const ImapEngine = (() => {
     }
     cfg = config;
     await _openDB();
-    if (!_alive(listConn)) { listConn = await _mkConn(config); }
+    // Open the list and admin connections in parallel: two TLS+LOGIN round trips
+    // used to happen one after the other (admin one only on first listFolders()).
+    const jobs = [];
+    if (!_alive(listConn))  jobs.push(_mkConn(config).then(c => { listConn = c; }));
+    if (!_alive(adminConn)) jobs.push(_mkConn(config).then(c => { adminConn = c; }).catch(() => {}));
+    await Promise.all(jobs);
     return listConn;
   }
 
@@ -157,12 +162,35 @@ const ImapEngine = (() => {
   }
 
   // ── List folders ──────────────────────────────────────────────────────────
-  async function listFolders() {
-    await _ensureAdmin();
-      return new Promise((res, rej) => {
+  // The folder tree is cached per account (localStorage) so the sidebar renders
+  // instantly on start; listFolders() refreshes it in the background.
+  let _foldersInflight = null;
+  const _foldersMem = new Map();   // email -> folders[]
+  function _fkey(email) { return 'elve_folders_' + String(email || '').toLowerCase(); }
+  function getCachedFolders(email) {
+    const em = String(email || cfg?.email || '').toLowerCase();
+    if (_foldersMem.has(em)) return _foldersMem.get(em);
+    try {
+      const v = JSON.parse(localStorage.getItem(_fkey(em)) || 'null');
+      if (Array.isArray(v) && v.length) { _foldersMem.set(em, v); return v; }
+    } catch(_) {}
+    return null;
+  }
+  function _storeFolders(email, folders) {
+    const em = String(email || '').toLowerCase();
+    _foldersMem.set(em, folders);
+    try { localStorage.setItem(_fkey(em), JSON.stringify(folders)); } catch(_) {}
+  }
+
+  function listFolders() {
+    if (_foldersInflight) return _foldersInflight;
+    const email = cfg?.email;
+    _foldersInflight = (async () => {
+      await _ensureAdmin();
+      const folders = await new Promise((res, rej) => {
         adminConn.getBoxes('', (err, boxes) => {
           if (err) return rej(err);
-          const folders = [], seenSp = new Set();
+          const out = [], seenSp = new Set();
           function walk(tree, prefix) {
             for (const [name, box] of Object.entries(tree || {})) {
               const delim = box.delimiter || '/';
@@ -172,14 +200,20 @@ const ImapEngine = (() => {
                 if (seenSp.has(sp)) { if (box.children) walk(box.children, path); continue; }
                 seenSp.add(sp);
               }
-              folders.push({ path, name, special: sp });
+              out.push({ path, name, special: sp });
               if (box.children) walk(box.children, path);
             }
           }
           walk(boxes, '');
-          res(folders);
+          res(out);
         });
       });
+      _storeFolders(email, folders);
+      return folders;
+    })();
+    const clear = () => { _foldersInflight = null; };
+    _foldersInflight.then(clear, clear);
+    return _foldersInflight;
   }
 
   function _detectSpecial(path, attribs) {
@@ -202,7 +236,20 @@ const ImapEngine = (() => {
   // ── fetchPage — CACHE-FIRST ───────────────────────────────────────────────
   // Serves from IndexedDB/memory; only hits IMAP if not yet cached.
   // forceRefresh=true: skip cache, fetch from IMAP, update cache.
-  async function fetchPage(folder, page, onProgress, forceRefresh) {
+  // User-initiated fetches (folder click, refresh, search) must never queue behind
+  // the background sync that walks every page of every folder on the same
+  // connection. Background callers pass {background:true} and yield while any
+  // foreground request is pending.
+  let _fgPending = 0;
+  async function _bgWait() { while (_fgPending > 0) await new Promise(r => setTimeout(r, 60)); }
+  async function fetchPage(folder, page, onProgress, forceRefresh, opts) {
+    if (opts?.background) { await _bgWait(); return _fetchPageRaw(folder, page, onProgress, forceRefresh); }
+    _fgPending++;
+    try { return await _fetchPageRaw(folder, page, onProgress, forceRefresh); }
+    finally { _fgPending--; }
+  }
+
+  async function _fetchPageRaw(folder, page, onProgress, forceRefresh) {
     return _withListLock(async () => {
       page = Math.max(1, page || 1);
       const hk = _hkey(folder, page);
@@ -518,7 +565,7 @@ const ImapEngine = (() => {
 
   async function _resolveSpecialFolder(special, fallbackPath) {
     try {
-      const folders = await listFolders();
+      const folders = getCachedFolders() || await listFolders();
       const bySpecial = folders.find(f => f.special === special);
       if (bySpecial?.path) return bySpecial.path;
       const want = (fallbackPath || '').toLowerCase();
@@ -712,6 +759,11 @@ const ImapEngine = (() => {
   }
 
   async function searchFolder(folder, query, isFlagSearch, opts) {
+    _fgPending++;
+    try { return await _searchFolderImpl(folder, query, isFlagSearch, opts); }
+    finally { _fgPending--; }
+  }
+  async function _searchFolderImpl(folder, query, isFlagSearch, opts) {
     if (!isFlagSearch) {
       const cached = getAllCachedHeaders(folder);
       if (cached.length > 0) {
@@ -786,6 +838,60 @@ const ImapEngine = (() => {
       f.once('error', done(reject));
       f.once('end', done(() => resolve(msgs)));
     });
+  }
+
+  // ── Delete everything from one sender ─────────────────────────────────────
+  // IMAP SEARCH FROM is a substring match ("bob@x.com" also hits "bigbob@x.com"),
+  // so candidates are verified against the real From address before deleting.
+  function _fetchFromAddrs(conn, uids) {
+    return new Promise(resolve => {
+      const out = new Map();
+      if (!uids.length) return resolve(out);
+      const f = conn.fetch(uids, { bodies: ['HEADER.FIELDS (FROM)'], markSeen: false });
+      f.on('message', msg => {
+        let hdr = '', uid = null;
+        msg.on('body', s => { let b = ''; s.on('data', c => b += c); s.once('end', () => hdr = b); });
+        msg.once('attributes', a => { uid = a.uid; });
+        msg.once('end', () => { if (uid) out.set(uid, extractAddr(_mime(_parseHdr(hdr).from || ''))); });
+      });
+      f.once('error', () => resolve(out));
+      f.once('end', () => resolve(out));
+    });
+  }
+
+  async function findUidsFromSender(folder, addr) {
+    const want = String(addr || '').toLowerCase().trim();
+    if (!want) return [];
+    await _ensureOp();
+    await new Promise((res, rej) => opConn.openBox(folder, true, e => e ? rej(e) : res()));
+    const cand = await new Promise((res, rej) => opConn.search([['FROM', want]], (e, u) => e ? rej(e) : res(u || [])));
+    const exact = [];
+    for (let i = 0; i < cand.length; i += 300) {
+      const map = await _fetchFromAddrs(opConn, cand.slice(i, i + 300));
+      for (const [uid, a] of map) if (a === want) exact.push(uid);
+    }
+    return exact;
+  }
+
+  // permanent=true (used inside Trash/Spam): flag \Deleted + EXPUNGE instead of moving to Trash.
+  async function deleteFromSender(folder, addr, permanent) {
+    const uids = await findUidsFromSender(folder, addr);
+    if (!uids.length) return 0;
+    for (let i = 0; i < uids.length; i += 500) {
+      const chunk = uids.slice(i, i + 500);
+      if (permanent) await deletePermanently(folder, chunk);
+      else await trashMessages(folder, chunk);
+    }
+    return uids.length;
+  }
+
+  async function deletePermanently(folder, uids) {
+    if (!uids?.length) return;
+    await _ensureOp();
+    await new Promise((res, rej) => opConn.openBox(folder, false, e => e ? rej(e) : res()));
+    await new Promise((res, rej) => opConn.addFlags(uids, ['\\Deleted'], e => e ? rej(e) : res()));
+    await new Promise((res, rej) => opConn.expunge(e => e ? rej(e) : res()));
+    _evict(folder, uids);
   }
 
   async function createFolder(path) {
@@ -937,7 +1043,7 @@ const ImapEngine = (() => {
 
   return {
     connect, disconnect,
-    listFolders, fetchPage, prefetchBodies, fetchBody,
+    listFolders, getCachedFolders, fetchPage, findUidsFromSender, deleteFromSender, deletePermanently, prefetchBodies, fetchBody,
     trashMessages, markSpam, archiveMessages, moveToFolder,
     startPoll, clearPoll, fetchNewest, searchFolder, createFolder, renameFolder, deleteFolder,
     fetchRawSource, getAllCachedHeaders,

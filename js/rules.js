@@ -1,6 +1,6 @@
 // js/rules.js — Filter/rules engine v3
 // delete-rules: match → auto-delete (unchanged)
-// move-rules:   named filters that move matched mail to a chosen folder
+// keyword filters (stored as 'move rules'): keywords + exceptions, action delete or move
 'use strict';
 const Rules = (() => {
   const KEY      = 'elve_rules_v2';
@@ -46,19 +46,50 @@ const Rules = (() => {
     return hits;
   }
 
-  // Returns first matching move rule, or null
-  function checkMove(msg) {
-    const sub=(msg.subject||'').toLowerCase(), frm=(msg.from||'').toLowerCase();
-    const addr=ImapEngine.extractAddr(msg.from||''), nm=ImapEngine.extractName(msg.from||'').toLowerCase();
-    const bd=(msg.rawBody||'').toLowerCase().slice(0,2000);
-    for(const rule of moveRules) {
-      if(!rule.enabled||!rule.targetFolder) continue;
-      const kws=(rule.keywords||[]).map(k=>k.toLowerCase()); if(!kws.length) continue;
-      const h={from:frm,domain:addr,subject:sub,body:bd,name:nm}[rule.field||'subject']||sub;
-      if(kws.some(k=>h.includes(k))) return rule;
+  // Body text lookup (set by app.js): (msg) => cached body text or ''.
+  // Headers are fetched before bodies, so body keywords only match once the body is cached.
+  let bodyProvider = () => '';
+  function setBodyProvider(fn) { bodyProvider = fn || (() => ''); }
+
+  function _plain(s) { return String(s || '').replace(/<[^>]+>/g, ' ').toLowerCase(); }
+
+  function _hay(msg) {
+    const frm = (msg.from || '').toLowerCase();
+    const addr = ImapEngine.extractAddr(msg.from || '');
+    const nm = ImapEngine.extractName(msg.from || '').toLowerCase();
+    const sub = (msg.subject || '').toLowerCase();
+    let bd = '';
+    try { bd = _plain(bodyProvider(msg) || msg.rawBody || '').slice(0, 20000); } catch (e) {}
+    // List-Unsubscribe header is a strong newsletter signal and is available at header time.
+    const lu = (msg.listUnsub || '').toLowerCase();
+    return { from: frm, domain: addr, subject: sub, body: bd, name: nm,
+             any: [sub, frm, bd, lu ? 'unsubscribe ' + lu : ''].join('\n') };
+  }
+
+  // Keyword filter: matches if ANY keyword hits `field`, unless ANY exception keyword
+  // appears anywhere in the message (subject, sender, body). Returns first matching
+  // enabled rule or null. rule.action: 'delete' | 'move' (missing = 'move', for old rules).
+  function checkMove(msg, ruleList) {
+    const h = _hay(msg);
+    for (const rule of (ruleList || moveRules)) {
+      if (!rule.enabled) continue;
+      const action = rule.action === 'delete' ? 'delete' : 'move';
+      if (action === 'move' && !rule.targetFolder) continue;
+      const kws = (rule.keywords || []).map(k => k.toLowerCase()).filter(Boolean); if (!kws.length) continue;
+      const hay = h[rule.field || 'subject'] ?? h.subject;
+      if (!kws.some(k => hay.includes(k))) continue;
+      const ex = (rule.exceptions || []).map(k => k.toLowerCase()).filter(Boolean);
+      if (ex.length && ex.some(k => h.any.includes(k))) continue;
+      return rule;
     }
     return null;
   }
+
+  // True if any enabled filter needs the message body to be evaluated.
+  function needsBody() {
+    return moveRules.some(r => r.enabled && ((r.field === 'body' || r.field === 'any') || (r.exceptions || []).length));
+  }
+  function hasActiveFilters() { return moveRules.some(r => r.enabled); }
 
   function findDupes(messages) {
     if(!rules.dupes?.enabled) return [];
@@ -87,5 +118,5 @@ const Rules = (() => {
     return dupes;
   }
 
-  return {load,save,get,check,findDupes,getMoveRules,saveMoveRules,addMoveRule,updateMoveRule,deleteMoveRule,checkMove};
+  return {load,save,get,check,findDupes,getMoveRules,saveMoveRules,addMoveRule,updateMoveRule,deleteMoveRule,checkMove,setBodyProvider,needsBody,hasActiveFilters};
 })();

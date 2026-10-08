@@ -6,6 +6,8 @@ const UI = (() => {
   const tagStates  = {};
   let selMode      = false;
   let holdTimer    = null;
+  let onSelExit    = null;
+  function setSelExitHandler(fn) { onSelExit = fn; }
 
   // ── Tag inputs ──────────────────────────────────────────────────────────
   function initTag(wrapId, inputId, key) {
@@ -210,6 +212,11 @@ const UI = (() => {
         if (msg.unread) { msg.unread=false; row.classList.remove('unread'); }
         onSelect(msg);
       });
+      row.addEventListener('contextmenu', e => {
+        if (!rowCtxHandler) return;
+        e.preventDefault(); e.stopPropagation();
+        rowCtxHandler(msg, e.clientX, e.clientY);
+      });
       cb.addEventListener('change',()=>{ row.classList.toggle('selected',cb.checked); _updateSelBar(); });
       cb.addEventListener('click',e=>e.stopPropagation());
 
@@ -219,6 +226,49 @@ const UI = (() => {
     if (selMode) _showCbs(true);
   }
 
+  // ── Row context menu (right click on a mail) ────────────────────────────
+  let rowCtxHandler = null;
+  let _rowCtxEl = null;
+  function setRowContextHandler(fn) { rowCtxHandler = fn; }
+  function showRowMenu(x, y, items) {
+    if (!_rowCtxEl) {
+      _rowCtxEl = document.createElement('div');
+      _rowCtxEl.className = 'folder-ctx-menu hidden';
+      document.body.appendChild(_rowCtxEl);
+      const hide = () => _rowCtxEl.classList.add('hidden');
+      document.addEventListener('click', hide);
+      document.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
+      window.addEventListener('blur', hide);
+      window.addEventListener('resize', hide);
+    }
+    const menu = _rowCtxEl;
+    menu.innerHTML = '';
+    items.forEach(it => {
+      if (it === 'hr') { menu.appendChild(document.createElement('hr')); return; }
+      const b = document.createElement('button');
+      b.textContent = it.label; if (it.danger) b.className = 'danger'; if (it.disabled) b.disabled = true;
+      b.addEventListener('click', e => { e.stopPropagation(); menu.classList.add('hidden'); it.onClick?.(); });
+      menu.appendChild(b);
+    });
+    menu.classList.remove('hidden');
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - 290)) + 'px';
+    menu.style.top  = Math.max(8, Math.min(y, window.innerHeight - items.length * 34 - 16)) + 'px';
+  }
+
+  // ── Select all ──────────────────────────────────────────────────────────
+  // Checks every row currently rendered (the visible page). Calling it again when
+  // everything is already checked clears the selection.
+  function selectAll() {
+    const cbs = [...document.querySelectorAll('.email-row input[type=checkbox]')];
+    if (!cbs.length) return;
+    const allOn = selMode && cbs.every(c => c.checked);
+    if (allOn) { exitSelectionMode(); return; }
+    _enterSel();
+    cbs.forEach(c => { c.checked = true; c.closest('.email-row')?.classList.add('selected'); });
+    _updateSelBar();
+  }
+  function rowCount() { return document.querySelectorAll('.email-row').length; }
+
   function _enterSel() {
     if (selMode) return;
     selMode=true; _showCbs(true);
@@ -226,7 +276,7 @@ const UI = (() => {
     document.getElementById('normal-toolbar')?.classList.add('hidden');
   }
   function exitSelectionMode() {
-    selMode=false; _showCbs(false);
+    selMode=false; if (onSelExit) try { onSelExit(); } catch(_) {} _showCbs(false);
     document.querySelectorAll('.email-row').forEach(r=>{ r.classList.remove('selected'); const cb=r.querySelector('input'); if(cb)cb.checked=false; });
     document.getElementById('selection-toolbar')?.classList.add('hidden');
     document.getElementById('normal-toolbar')?.classList.remove('hidden');
@@ -1109,7 +1159,7 @@ const UI = (() => {
     initTag,setTags,getTags,refreshTags,
     renderFolderNav,setActiveFolder,
     renderEmailList,removeRow,markScam,
-    exitSelectionMode,getSelectedIds,isSelMode,
+    exitSelectionMode,getSelectedIds,isSelMode,selectAll,rowCount,setRowContextHandler,showRowMenu,setSelExitHandler,
     showReader,setEmailBody,showAIResult,
     renderCalendar,
     setSync,showScan,hideScan,scanProg,scanLog,scanDone,
