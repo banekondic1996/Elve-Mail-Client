@@ -23,6 +23,8 @@ const App = (() => {
     inboxPath: 'INBOX',
     openMsgToken: 0,
     folderMeta: {},
+    loadSeq: 0,          // bumped on every folder load; stale async loads bail out
+    imageOK: new Set(),  // spam messages whose remote images the user approved
     selAllMsgs: null,   // set when 'Select all in folder' is active
     sweepDone: new Set(),
   };
@@ -39,14 +41,16 @@ const App = (() => {
       if (e.data.type === 'compose') _openCompose(e.data.to);
       if (e.data.type === 'blockKeyword') {
         const kw = (e.data.keyword||'').slice(0,60); if (!kw) return;
-        const r = Rules.get(); r.body = r.body||{enabled:true,list:[]};
-        if (!r.body.list.includes(kw)) { r.body.list.push(kw); Rules.save(r); }
+        // Selected text -> keyword filter ("Blocked keywords"): delete mail containing it.
+        const added = Rules.addBlock('body', kw);
+        UI.setSync('done', added ? `Blocked keyword "${kw.slice(0,24)}"` : `"${kw.slice(0,24)}" is already blocked`);
+        _refilterVisible(S.folder, true);
       }
     });
     window.addEventListener('elve:theme-changed', () => {
       if (!S.activeMsg) return;
       const body = ImapEngine.getCachedBody?.(S.activeMsg.folder || S.folder, S.activeMsg.uid);
-      if (body) UI.setEmailBody(body, S.activeMsg);
+      if (body) _showBody(body, S.activeMsg);
     });
     Vault.hasVault() ? _showUnlock(false) : _showUnlock(true);
   }
@@ -364,7 +368,7 @@ const App = (() => {
 
   // ── Wire buttons ──────────────────────────────────────────────────────────
   function _wireApp() {
-    _on('rules-btn',_showRules); _on('move-rules-btn',_showMoveRules); _on('stats-btn',_showStats);
+    _on('move-rules-btn',_showMoveRules); _on('stats-btn',_showStats);
     _on('mr-add-btn',()=>_editMoveRule(null));
     _on('mr-save-btn',_saveMoveRule);
     _on('mr-cancel-btn',()=>document.getElementById('mr-edit-panel')?.classList.add('hidden'));
@@ -407,7 +411,7 @@ const App = (() => {
     _on('ai-btn',_analyseActive); _on('ai-dismiss',()=>document.getElementById('ai-panel')?.classList.add('hidden'));
     _on('scan-done-btn',()=>{ UI.hideScan(); _loadFolder(S.folder,1,true); });
     _on('ai-cfg-btn',_openAISettings);
-    _on('ai-settings-save',_saveAISettings); _on('save-rules-btn',_saveRules);
+    _on('ai-settings-save',_saveAISettings); 
     _on('page-prev',()=>{ if(S.page>1) _loadFolder(S.folder,S.page-1); });
     _on('page-next',()=>{ if(S.page<S.totalPages) _loadFolder(S.folder,S.page+1); });
 
@@ -428,7 +432,7 @@ const App = (() => {
 
     _on('reader-block-btn',e=>{ e.stopPropagation(); document.getElementById('block-menu')?.classList.toggle('hidden'); });
     document.addEventListener('click',()=>document.getElementById('block-menu')?.classList.add('hidden'));
-    _on('block-by-addr',()=>_blockActive('email'));
+    _on('block-by-addr',()=>_blockActive('address'));
     _on('block-by-subject',()=>_blockActive('subject'));
     _on('block-by-domain',()=>_blockActive('domain'));
 
@@ -469,9 +473,8 @@ const App = (() => {
     });
     const sf=document.getElementById('search-field'); if (sf) sf.value=S.searchOpts.field;
     const sm=document.getElementById('search-match'); if (sm) sm.value=S.searchOpts.match;
-    UI.initTag('tw-domain','ti-domain','domain'); UI.initTag('tw-email','ti-email','email');
-    UI.initTag('tw-name','ti-name','name'); UI.initTag('tw-subject','ti-subject','subject');
-    UI.initTag('tw-body','ti-body','body');
+    _wireFilterEditor();
+    _wireListResizer();
   }
 
   function _on(id,fn) { document.getElementById(id)?.addEventListener('click',fn); }
@@ -592,7 +595,8 @@ const App = (() => {
   // Only shows spinner + hits IMAP when folder has never been fetched.
   async function _loadFolder(folder, page, forceRefresh) {
     page=Math.max(1,page||1);
-    S.folder=folder; S.page=page; S.searchMode=false;
+    const seq=++S.loadSeq, stale=()=>seq!==S.loadSeq;   // a newer folder click supersedes this load
+    S.folder=folder; S.page=page; S.searchMode=false; S.selAllMsgs=null;
     const sb=document.getElementById('search-box'); if (sb) sb.value='';
     UI.exitSelectionMode(); UI.setActiveFolder(folder);
     _setTxt('folder-name-label',_folderLabel(folder));
@@ -602,7 +606,7 @@ const App = (() => {
     const container=document.getElementById('email-list-container');
 
     try {
-      if (folder==='__unread__') { await _loadUnread(page); return; }
+      if (folder==='__unread__') { await _loadUnread(page, stale); return; }
 
       // Cache-first: if we have headers in memory/IndexedDB, render instantly.
       const cachedAll = ImapEngine.getAllCachedHeaders(folder);
@@ -619,6 +623,7 @@ const App = (() => {
         // If user requested a page beyond what cache currently has, fetch that page from server.
         if (page > cachePages && knownPages > cachePages) {
           await _bgSyncFolder(folder, page);
+          if (stale()) return;
           sourceAll = ImapEngine.getAllCachedHeaders(folder);
           cachePages = Math.max(1, Math.ceil(sourceAll.length/ps));
           const meta2 = S.folderMeta[folder];
@@ -641,7 +646,7 @@ const App = (() => {
           S.unread[folder]=S.messages.filter(m=>m.unread).length; _renderNav();
           UI.setSync('done',`${S.messages.length} shown`);
           const uids=S.messages.map(m=>m.uid).filter(Boolean);
-          if (uids.length) ImapEngine.prefetchBodies(folder,uids,null).then(()=>_refilterVisible(folder)).catch(()=>{});
+          if (uids.length) ImapEngine.prefetchBodies(folder,uids,null,{latest:true}).then(()=>_refilterVisible(folder)).catch(()=>{});
           if (deleted.length) _batchDelete(folder,deleted).catch(()=>{});
           if (moved.length)   _batchMove(folder,moved).catch(()=>{});
           _autoScanHighRisk(S.messages, folder).catch(()=>{});
@@ -655,8 +660,10 @@ const App = (() => {
       UI.setSync('syncing',`Loading ${_folderLabel(folder)}…`);
 
       const res=await ImapEngine.fetchPage(folder,page,({seqStart,seqEnd,total})=>{
+        if (stale()) return;
         container.innerHTML=`<div class="list-state"><div class="state-spinner"></div><div class="state-text">Fetching ${seqStart}–${seqEnd} of ${total}…</div></div>`;
       },forceRefresh);
+      if (stale()) return;
 
       S.messages=res.messages; S.page=res.page; S.totalPages=res.totalPages; S.totalMsgs=res.total;
       S.folderMeta[folder] = { total: res.total, totalPages: res.totalPages, ts: Date.now() };
@@ -673,8 +680,9 @@ const App = (() => {
       const uids=S.messages.map(m=>m.uid).filter(Boolean);
       if (uids.length) {
         ImapEngine.prefetchBodies(folder,uids,({done,total})=>{
+          if (S.folder!==folder) return;
           if (done<total) { document.getElementById('sync-dot')?.setAttribute('class','sync-dot syncing'); _setTxt('sync-text',`Caching ${done}/${total}…`); }
-        }).then(()=>{
+        },{latest:true}).then(()=>{
           _refilterVisible(folder);
           UI.setSync('done',`${S.messages.length} shown`);
           if (!S.synced.has(folder)) _bgSyncFolder(folder).catch(()=>{});
@@ -686,6 +694,7 @@ const App = (() => {
 
     } catch(err) {
       console.error('[App]',err);
+      if (stale()) return;
       container.innerHTML=`<div class="list-state"><div class="state-text" style="color:var(--danger)">⚠ ${UI.esc(err.message)}</div><button class="toolbar-btn" id="retry-btn" style="margin-top:8px">Retry</button></div>`;
       document.getElementById('retry-btn')?.addEventListener('click',()=>_loadFolder(folder,page,true));
       UI.setSync('error',err.message);
@@ -697,7 +706,8 @@ const App = (() => {
     }
   }
 
-  async function _loadUnread(page) {
+  async function _loadUnread(page, stale) {
+    stale = stale || (() => false);
     page = Math.max(1, page||1);
     const container = document.getElementById('email-list-container');
     const PS = ImapEngine.PAGE_SIZE;
@@ -722,6 +732,7 @@ const App = (() => {
     container.innerHTML = `<div class="list-state"><div class="state-spinner"></div><div class="state-text">Loading unread…</div></div>`;
     try {
       const msgs = await ImapEngine.searchFolder(inboxPath, 'UNSEEN', true);
+      if (stale()) return;
       const tp = Math.max(1, Math.ceil(msgs.length / PS));
       const slice = msgs.slice((page-1)*PS, page*PS);
       S.messages = slice; S.totalMsgs = msgs.length;
@@ -748,8 +759,6 @@ const App = (() => {
         msg._deleteReason='duplicate'; msg._kept=false; deleted.push(msg); UI.removeRow(msg.id); continue;
       }
       if (k) seen.set(k, msg.id);
-      const hits=Rules.check(msg);
-      if (hits.length) { msg._deleteReason=`${hits[0].rule}:${hits[0].value}`;msg._kept=false;deleted.push(msg);UI.removeRow(msg.id);continue; }
       const mr=Rules.checkMove?.(msg);
       if (mr && mr.action==='delete') { msg._deleteReason=`filter:${mr.name||'rule'}`;msg._kept=false;deleted.push(msg);UI.removeRow(msg.id);continue; }
       if (mr) { msg._moveTarget=mr.targetFolder;msg._kept=false;moved.push(msg);UI.removeRow(msg.id);continue; }
@@ -861,11 +870,21 @@ const App = (() => {
     try {
       const body=await ImapEngine.fetchBody(msg.folder||S.folder,msg.uid);
       if (token !== S.openMsgToken || !S.activeMsg || S.activeMsg.id !== msg.id) return;
-      UI.setEmailBody(body,msg);
+      _showBody(body,msg);
     } catch(e) {
       if (token !== S.openMsgToken || !S.activeMsg || S.activeMsg.id !== msg.id) return;
       UI.setEmailBody({html:null,text:'Error: '+e.message,attachments:[]},msg);
     }
+  }
+
+  // Spam: never fetch remote images (tracking pixels) until the user approves this message.
+  function _showBody(body, msg) {
+    const folder = msg.folder || S.folder;
+    const inSpam = S.folders.find(f=>f.path===folder)?.special==='spam';
+    UI.setEmailBody(body, msg, {
+      blockImages: inSpam && !S.imageOK.has(msg.id),
+      onAllowImages: () => { S.imageOK.add(msg.id); if (S.activeMsg?.id===msg.id) _showBody(body, msg); },
+    });
   }
 
   async function _archiveActive() {
@@ -1002,14 +1021,20 @@ const App = (() => {
     });
   }
 
+  // by: 'address' | 'domain' | 'subject'. Adds to the matching "Blocked …" keyword filter.
   function _blockActive(by) {
-    if (!S.activeMsg) return;
     document.getElementById('block-menu')?.classList.add('hidden');
-    const msg=S.activeMsg, rules=Rules.get();
-    if (by==='email') { const a=ImapEngine.extractAddr(msg.from||''); if(a){rules.email=rules.email||{enabled:true,list:[]};if(!rules.email.list.includes(a)){rules.email.list.push(a);rules.email.enabled=true;}} }
-    else if (by==='domain') { const d=ImapEngine.extractAddr(msg.from||'').split('@')[1]||''; if(d){rules.domain=rules.domain||{enabled:true,list:[]};if(!rules.domain.list.includes(d)){rules.domain.list.push(d);rules.domain.enabled=true;}} }
-    else if (by==='subject') { const s=_ns(msg.subject); if(s){rules.subject=rules.subject||{enabled:true,list:[]};if(!rules.subject.list.includes(s)){rules.subject.list.push(s);rules.subject.enabled=true;}} }
-    Rules.save(rules); UI.setSync('done',`Blocked by ${by}`); _deleteActive();
+    if (!S.activeMsg) return;
+    const msg=S.activeMsg;
+    if (_blockMsg(msg, by)) _deleteActive();
+  }
+  function _blockMsg(msg, by) {
+    const addr=ImapEngine.extractAddr(msg.from||'');
+    const value = by==='address' ? addr : by==='domain' ? (addr.split('@')[1]||'') : _ns(msg.subject);
+    if (!value) { UI.setSync('error','Nothing to block'); return false; }
+    const added = Rules.addBlock(by, value);
+    UI.setSync('done', added ? `Blocked ${by}: ${value}` : `Already blocked: ${value}`);
+    return true;
   }
 
   // ── Select all ────────────────────────────────────────────────────────────
@@ -1054,9 +1079,24 @@ const App = (() => {
   function _rowMenu(msg, x, y) {
     const addr = ImapEngine.extractAddr(msg.from||'');
     const folder = msg.folder || S.folder;
-    const items = [{ label:'Delete this message', danger:true, onClick:()=>_deleteMsg(msg) }];
+    const isSpamFolder = S.folders.find(f=>f.path===folder)?.special==='spam';
+    const items = [];
+    if (!isSpamFolder) items.push({ label:'🚫 Move to spam', onClick:()=>_spamMsg(msg) });
+    if (addr) items.push({ label:`⛔ Block sender (${addr})`, onClick:async()=>{ if (_blockMsg(msg,'address')) { await _applyFilterResult(folder, _filterOnly([...S.messages])); } } });
+    items.push('hr');
+    items.push({ label:'Delete this message', danger:true, onClick:()=>_deleteMsg(msg) });
     if (addr) items.push({ label:`Delete all from ${addr}`, danger:true, onClick:()=>_deleteAllFromSender(addr, folder) });
     UI.showRowMenu(x, y, items);
+  }
+  async function _spamMsg(msg) {
+    if (S.activeMsg?.id===msg.id) {
+      S.activeMsg=null;
+      document.getElementById('reader-empty')?.classList.remove('hidden');
+      document.getElementById('reader-view')?.classList.add('hidden');
+    }
+    UI.removeRow(msg.id); S.messages=S.messages.filter(m=>m.id!==msg.id); S.allLoaded=S.allLoaded.filter(m=>m.id!==msg.id);
+    try { await ImapEngine.markSpam(msg.folder||S.folder,[msg.uid]); _log('spam',`Marked spam: "${(msg.subject||'').slice(0,45)}"`); UI.setSync('done','Moved to spam'); }
+    catch(e) { UI.setSync('error','Spam error: '+e.message); }
   }
   async function _deleteMsg(msg) {
     if (S.activeMsg?.id===msg.id) {
@@ -1574,6 +1614,10 @@ const App = (() => {
   }
 
   function _showMoveRules() {
+    const r=Rules.get();
+    const d=document.getElementById('kf-dupes'), a=document.getElementById('kf-aiscam');
+    if (d) d.checked = r.dupes?.enabled!==false;
+    if (a) a.checked = !!r.aiscam?.enabled;
     document.getElementById('move-rules-overlay')?.classList.remove('hidden');
     _renderMoveRulesList();
   }
@@ -1588,7 +1632,7 @@ const App = (() => {
         <input type="checkbox" class="mr-enabled rule-chk" ${rule.enabled?'checked':''}>
         <div class="mr-row-info">
           <div class="mr-row-name">${UI.esc(rule.name||'Unnamed')}</div>
-          <div class="mr-row-meta">${UI.esc(rule.field||'subject')} contains "<em>${UI.esc((rule.keywords||[]).slice(0,3).join(', '))}</em>"${(rule.exceptions||[]).length?` except "<em>${UI.esc(rule.exceptions.slice(0,3).join(', '))}</em>"`:''} → ${rule.action==='delete'?'🗑 delete':'📁 '+UI.esc(rule.targetFolder||'?')}</div>
+          <div class="mr-row-meta">${UI.esc(_fieldName(rule.field))} ${rule.match==='all'?'contains all of':'contains any of'} "<em>${UI.esc((rule.keywords||[]).slice(0,3).join(rule.match==='all'?' + ':', '))}${(rule.keywords||[]).length>3?'…':''}</em>"${(rule.exceptions||[]).length?` except "<em>${UI.esc(rule.exceptions.slice(0,3).join(', '))}</em>"`:''} → ${rule.action==='delete'?'🗑 delete':'📁 '+UI.esc(rule.targetFolder||'?')}</div>
         </div>
       </div>
       <div class="mr-row-btns">
@@ -1606,10 +1650,11 @@ const App = (() => {
     document.getElementById('mr-id').value=rule?.id||'';
     document.getElementById('mr-name').value=rule?.name||'';
     document.getElementById('mr-field').value=rule?.field||'subject';
+    document.getElementById('mr-match').value=rule?.match==='all'?'all':'any';
     document.getElementById('mr-keywords').value=(rule?.keywords||[]).join(', ');
     document.getElementById('mr-exceptions').value=(rule?.exceptions||[]).join(', ');
     document.getElementById('mr-action').value=rule?.action==='delete'?'delete':'move';
-    _syncFilterActionUI();
+    _syncFilterActionUI(); _syncFieldUI();
     // Populate target folder dropdown from current account's folders
     const sel=document.getElementById('mr-target');
     sel.innerHTML=S.folders.filter(f=>f.special!=='inbox'||true).map(f=>`<option value="${UI.esc(f.path)}"${rule?.targetFolder===f.path?' selected':''}>${UI.esc(f.name||f.path)}</option>`).join('');
@@ -1628,13 +1673,125 @@ const App = (() => {
     if(action==='move'&&!target){UI.setSync('error','Select a target folder');return;}
     if(!kws.length){UI.setSync('error','Enter at least one keyword');return;}
     const prev=id?Rules.getMoveRules().find(r=>r.id===id):null;
-    const rule={id,name,enabled:prev?prev.enabled!==false:true,field,keywords:kws,exceptions,action,targetFolder:action==='move'?target:''};
+    const match=document.getElementById('mr-match').value==='all'?'all':'any';
+    const rule={id,name,enabled:prev?prev.enabled!==false:true,field,keywords:kws,match,exceptions,action,targetFolder:action==='move'?target:''};
     if(id) Rules.updateMoveRule(id,rule); else Rules.addMoveRule(rule);
     document.getElementById('mr-edit-panel')?.classList.add('hidden');
     _renderMoveRulesList();
     UI.setSync('done','Filter saved');
     _refilterVisible(S.folder, true);
   }
+  // ── Filter editor: field-aware labels + suggestions from the inbox ────────
+  const FIELD_META = {
+    from:    { name:'Address',     label:'Addresses',    ph:'news@shop.com, noreply@site.org' },
+    domain:  { name:'Domain',      label:'Domains',      ph:'promo.com, spam.net' },
+    name:    { name:'Sender name', label:'Sender names', ph:'Marketing Team, Newsletter' },
+    subject: { name:'Subject',     label:'Keywords',     ph:'sale, you have won' },
+    body:    { name:'Body',        label:'Keywords',     ph:'unsubscribe, click here' },
+    any:     { name:'Anywhere',    label:'Keywords',     ph:'newsletter, unsubscribe' },
+  };
+  function _fieldName(f) { return (FIELD_META[f] || FIELD_META.subject).name.toLowerCase(); }
+  function _syncFieldUI() {
+    const f = document.getElementById('mr-field')?.value || 'subject';
+    const m = FIELD_META[f] || FIELD_META.subject;
+    const lab = document.getElementById('mr-keywords-label');
+    if (lab) lab.innerHTML = `${m.label} <span style="color:var(--text3)">(comma-separated)</span>`;
+    const inp = document.getElementById('mr-keywords'); if (inp) inp.placeholder = m.ph;
+    document.getElementById('mr-suggest')?.classList.add('hidden');
+  }
+
+  const _STOP = new Set(['this','that','with','from','your','have','will','they','been','were','what','when','about','there','their','would','could','just','more','than','into','also','here','some','only','over','such','then','them','these','those','where','which','while','news','email','mail','free','best','today','welcome','hello','thanks','thank','please','update','order','account']);
+  let _sugCache = { key:'', list:[] };
+  function _suggestPool(field) {
+    const msgs = ImapEngine.getAllCachedHeaders(S.inboxPath || 'INBOX');
+    const key = field + ':' + msgs.length;
+    if (_sugCache.key === key) return _sugCache.list;
+    const cnt = new Map();
+    const add = v => { if (!v) return; const e = cnt.get(v) || { value:v, count:0 }; e.count++; cnt.set(v, e); };
+    for (const m of msgs) {
+      const addr = ImapEngine.extractAddr(m.from || '');
+      if (field === 'from') add(addr);
+      else if (field === 'domain') add(addr.split('@')[1] || '');
+      else if (field === 'name') add(ImapEngine.extractName(m.from || '').toLowerCase());
+      else {
+        const words = new Set(String(m.subject || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 4 && !_STOP.has(w)));
+        words.forEach(add);
+      }
+    }
+    const list = [...cnt.values()].sort((a, b) => b.count - a.count).slice(0, 400);
+    _sugCache = { key, list };
+    return list;
+  }
+
+  function _wireFilterEditor() {
+    document.getElementById('mr-field')?.addEventListener('change', _syncFieldUI);
+    document.getElementById('kf-dupes')?.addEventListener('change', e => Rules.save({ dupes:{ enabled:!!e.target.checked } }));
+    document.getElementById('kf-aiscam')?.addEventListener('change', e => Rules.save({ aiscam:{ enabled:!!e.target.checked } }));
+
+    const inp = document.getElementById('mr-keywords'), box = document.getElementById('mr-suggest');
+    if (!inp || !box) return;
+    let items = [], active = -1;
+    const render = () => {
+      const field = document.getElementById('mr-field')?.value || 'subject';
+      const parts = inp.value.split(',');
+      const token = (parts.pop() || '').trim().toLowerCase();
+      const have = new Set(parts.map(p => p.trim().toLowerCase()).filter(Boolean));
+      items = _suggestPool(field).filter(e => !have.has(e.value) && (!token || e.value.includes(token)) && e.value !== token).slice(0, 8);
+      active = -1;
+      if (!items.length) { box.classList.add('hidden'); return; }
+      box.innerHTML = items.map((e, i) => `<div class="suggest-item" data-i="${i}"><span>${UI.esc(e.value)}</span><span class="sg-count">${e.count}×</span></div>`).join('');
+      box.classList.remove('hidden');
+    };
+    const pick = i => {
+      const e = items[i]; if (!e) return;
+      const parts = inp.value.split(','); parts.pop();
+      inp.value = [...parts.map(p => p.trim()).filter(Boolean), e.value].join(', ') + ', ';
+      box.classList.add('hidden'); inp.focus(); render();
+    };
+    const mark = () => box.querySelectorAll('.suggest-item').forEach((el, i) => el.classList.toggle('active', i === active));
+    inp.addEventListener('input', render);
+    inp.addEventListener('focus', render);
+    inp.addEventListener('blur', () => setTimeout(() => box.classList.add('hidden'), 150));
+    inp.addEventListener('keydown', e => {
+      if (box.classList.contains('hidden')) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); active = (active + 1) % items.length; mark(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); active = (active - 1 + items.length) % items.length; mark(); }
+      else if ((e.key === 'Enter' || e.key === 'Tab') && active >= 0) { e.preventDefault(); pick(active); }
+      else if (e.key === 'Escape') { box.classList.add('hidden'); }
+    });
+    box.addEventListener('mousedown', e => {
+      const el = e.target.closest('.suggest-item'); if (!el) return;
+      e.preventDefault(); pick(parseInt(el.dataset.i));
+    });
+  }
+
+  // ── Resizable mail list ───────────────────────────────────────────────────
+  function _wireListResizer() {
+    const rz = document.getElementById('list-resizer'), pane = document.getElementById('list-pane');
+    if (!rz || !pane) return;
+    const root = document.documentElement;
+    try { const w = parseInt(localStorage.getItem('elve_list_w'), 10); if (w >= 240 && w <= 1400) root.style.setProperty('--list-w', w + 'px'); } catch(_) {}
+    const scale = () => parseFloat(getComputedStyle(root).getPropertyValue('--ui-scale')) || 1;
+    let startX = 0, startW = 0;
+    const move = e => {
+      const sc = scale();
+      const max = Math.max(260, window.innerWidth / sc - 480);   // always leave room for sidebar + reader
+      const w = Math.max(240, Math.min(max, startW + (e.clientX - startX) / sc));
+      root.style.setProperty('--list-w', w + 'px');
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+      rz.classList.remove('dragging'); document.body.classList.remove('resizing-pane');
+      try { localStorage.setItem('elve_list_w', String(Math.round(pane.getBoundingClientRect().width / scale()))); } catch(_) {}
+    };
+    rz.addEventListener('mousedown', e => {
+      e.preventDefault(); startX = e.clientX; startW = pane.getBoundingClientRect().width / scale();
+      rz.classList.add('dragging'); document.body.classList.add('resizing-pane');
+      document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+    });
+    rz.addEventListener('dblclick', () => { root.style.setProperty('--list-w', '320px'); try { localStorage.removeItem('elve_list_w'); } catch(_) {} });
+  }
+
   function _syncFilterActionUI() {
     const del=document.getElementById('mr-action')?.value==='delete';
     document.getElementById('mr-target-wrap')?.classList.toggle('hidden',del);
@@ -1807,20 +1964,6 @@ const App = (() => {
       _setTxt('master-change-status', 'Error: ' + e.message);
     }
     setTimeout(() => _setTxt('master-change-status', ''), 3000);
-  }
-
-  function _showRules() {
-    const r=Rules.get();
-    ['domain','email','name','subject','body'].forEach(k=>{ const el=document.getElementById('r-'+k); if(el) el.checked=r[k]?.enabled||false; UI.setTags(k,r[k]?.list||[]); UI.refreshTags('tw-'+k,'ti-'+k,k); });
-    document.getElementById('r-dupes').checked=r.dupes?.enabled!==false;
-    document.getElementById('r-aiscam').checked=r.aiscam?.enabled||false;
-    document.getElementById('rules-overlay')?.classList.remove('hidden');
-  }
-  function _saveRules() {
-    const r={dupes:{enabled:document.getElementById('r-dupes').checked},aiscam:{enabled:document.getElementById('r-aiscam').checked}};
-    ['domain','email','name','subject','body'].forEach(k=>{ r[k]={enabled:document.getElementById('r-'+k).checked,list:UI.getTags(k)}; });
-    Rules.save(r); document.getElementById('rules-overlay')?.classList.add('hidden'); UI.setSync('done','Filters saved');
-    if (S.messages.length) { const {kept,deleted}=_applyFilters([...S.messages]); S.messages=kept; _renderList(); if(deleted.length) _batchDelete(S.folder,deleted); }
   }
 
   function _showStats() {

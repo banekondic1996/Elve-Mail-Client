@@ -78,7 +78,7 @@
     <div class="sidebar-header">
       <div class="app-logo small"><span class="logo-glyph">✦</span><span class="logo-text">Elve</span></div>
       <div class="sidebar-header-btns">
-        <button class="icon-btn" id="compose-btn"  title="Compose">✏</button>
+        <button class="create-btn" id="compose-btn" title="Write a new mail">Create</button>
         <button class="icon-btn" id="calendar-btn" title="Calendar">📅</button>
         <button class="icon-btn" id="theme-btn"    title="Appearance">◑</button>
       </div>
@@ -121,7 +121,6 @@
         <span id="sync-text">Ready</span>
       </div>
       <div class="sidebar-actions">
-        <button class="sb-btn" id="rules-btn">⚙ Filters</button>
         <button class="sb-btn" id="move-rules-btn">📂 Keyword Filters</button>
         <button class="sb-btn" id="stats-btn">📊 Stats</button>
       </div>
@@ -156,6 +155,8 @@
     </div>
     <div id="email-list-container"></div>
   </div>
+
+  <div class="pane-resizer" id="list-resizer" title="Drag to resize the mail list"></div>
 
   <!-- Reader -->
   <div class="reader-pane" id="reader-pane">
@@ -379,23 +380,6 @@
     </div>
   </div>
 
-  <!-- ══ Filters ══ -->
-  <div class="overlay hidden" id="rules-overlay">
-    <div class="overlay-card">
-      <div class="ov-header"><span>Filters &amp; Auto-Delete Rules</span><button class="ov-close" data-close="rules-overlay">×</button></div>
-      <div class="ov-body rules-body">
-        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-domain" class="rule-chk"> Delete by Domain</label><div class="tag-wrap" id="tw-domain"><input class="tag-inp" id="ti-domain" placeholder="spam.com… (press Enter to add)"></div></div>
-        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-email"  class="rule-chk"> Delete by Email Address</label><div class="tag-wrap" id="tw-email"><input class="tag-inp" id="ti-email" placeholder="noreply@bad.com… (press Enter to add)"></div></div>
-        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-name"   class="rule-chk"> Delete by Sender Name</label><div class="tag-wrap" id="tw-name"><input class="tag-inp" id="ti-name" placeholder="Marketing… (press Enter to add)"></div></div>
-        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-subject" class="rule-chk"> Delete by Subject</label><div class="tag-wrap" id="tw-subject"><input class="tag-inp" id="ti-subject" placeholder="you've won… (press Enter to add)"></div></div>
-        <div class="rule-row"><label class="rule-label"><input type="checkbox" id="r-body"   class="rule-chk"> Delete by Body Keyword</label><div class="tag-wrap" id="tw-body"><input class="tag-inp" id="ti-body" placeholder="click here… (press Enter to add)"></div></div>
-        <div class="rule-row simple"><label class="rule-label"><input type="checkbox" id="r-dupes" class="rule-chk" checked> Remove Duplicate Emails</label></div>
-        <div class="rule-row simple"><label class="rule-label"><input type="checkbox" id="r-aiscam" class="rule-chk"> Auto-delete AI HIGH-risk scams</label></div>
-        <button class="save-btn" id="save-rules-btn">Save Filters</button>
-      </div>
-    </div>
-  </div>
-
   <!-- ══ Move Rules ══ -->
   <div class="overlay hidden" id="move-rules-overlay">
     <div class="overlay-card">
@@ -404,21 +388,32 @@
         <p style="font-size:12px;color:var(--text3);margin-bottom:12px">Delete or move mail that contains certain words, unless it also contains an exception word. Filters run once when the app starts, when a folder loads, and on every newly received mail.</p>
         <div id="mr-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;max-height:260px;overflow-y:auto;min-height:40px;"></div>
         <button class="toolbar-btn" id="mr-add-btn">&#xFF0B; New Rule</button>
+        <div class="rule-row simple" style="margin-top:14px"><label class="rule-label"><input type="checkbox" id="kf-dupes" class="rule-chk"> Remove duplicate emails</label></div>
+        <div class="rule-row simple"><label class="rule-label"><input type="checkbox" id="kf-aiscam" class="rule-chk"> Auto-delete AI HIGH-risk scams</label></div>
         <div id="mr-edit-panel" class="mr-edit-panel hidden" style="margin-top:16px;">
           <input type="hidden" id="mr-id">
           <div class="fg"><label>Rule name</label><input type="text" id="mr-name" class="fg-input" placeholder="e.g. Newsletters"></div>
           <div class="fg"><label>Match field</label>
             <select id="mr-field" class="fg-select">
               <option value="subject">Subject</option>
-              <option value="from">From address</option>
+              <option value="from">Address</option>
               <option value="domain">Sender domain</option>
               <option value="name">Sender name</option>
               <option value="body">Body keyword</option>
               <option value="any">Anywhere (subject, sender, body, unsubscribe header)</option>
             </select>
           </div>
-          <div class="fg"><label>Keywords <span style="color:var(--text3)">(comma-separated)</span></label>
-            <input type="text" id="mr-keywords" class="fg-input" placeholder="newsletter, unsubscribe"></div>
+          <div class="fg"><label id="mr-keywords-label">Keywords <span style="color:var(--text3)">(comma-separated)</span></label>
+            <div class="suggest-wrap">
+              <input type="text" id="mr-keywords" class="fg-input" placeholder="newsletter, unsubscribe" autocomplete="off">
+              <div class="suggest-list hidden" id="mr-suggest"></div>
+            </div></div>
+          <div class="fg"><label>Match</label>
+            <select id="mr-match" class="fg-select">
+              <option value="any">Any of these (at least one matches)</option>
+              <option value="all">All of these (every one must match)</option>
+            </select>
+          </div>
           <div class="fg"><label>Except if it contains <span style="color:var(--text3)">(comma-separated, checked in subject, sender and body)</span></label>
             <input type="text" id="mr-exceptions" class="fg-input" placeholder="Unity3d"></div>
           <div class="fg"><label>Action</label>

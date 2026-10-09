@@ -1,23 +1,54 @@
-// js/rules.js — Filter/rules engine v3
-// delete-rules: match → auto-delete (unchanged)
-// keyword filters (stored as 'move rules'): keywords + exceptions, action delete or move
+// js/rules.js — Rules engine v4
+// One list of "keyword filters" (the old separate "Filters" screen is gone):
+//   { id, name, enabled, field, keywords[], match:'any'|'all', exceptions[], action:'delete'|'move', targetFolder }
+// field: subject | from (address) | domain | name | body | any
+// Block actions (block sender / domain / subject / keyword) append to system filters 'blk_*'.
 'use strict';
 const Rules = (() => {
-  const KEY      = 'elve_rules_v2';
-  const MOVE_KEY = 'elve_move_rules_v1';
-  const DEF = {
-    domain:{enabled:false,list:[]}, email:{enabled:false,list:[]},
-    name:{enabled:false,list:[]}, subject:{enabled:false,list:[]},
-    body:{enabled:false,list:[]}, dupes:{enabled:true}, aiscam:{enabled:false},
-  };
+  const KEY      = 'elve_rules_v2';          // legacy list rules + dupes/aiscam flags
+  const MOVE_KEY = 'elve_move_rules_v1';     // keyword filters
+  const MIG_KEY  = 'elve_rules_migrated_v3';
+  const DEF = { dupes:{enabled:true}, aiscam:{enabled:false} };
   let rules     = JSON.parse(JSON.stringify(DEF));
-  let moveRules = [];   // [{ id, name, enabled, field, keywords[], targetFolder }]
+  let moveRules = [];
+
+  const BLOCK = {
+    address: { id:'blk_address', name:'Blocked addresses', field:'from'    },
+    domain:  { id:'blk_domain',  name:'Blocked domains',   field:'domain'  },
+    subject: { id:'blk_subject', name:'Blocked subjects',  field:'subject' },
+    body:    { id:'blk_body',    name:'Blocked keywords',  field:'any'     },
+  };
 
   function load() {
-    try { const s=localStorage.getItem(KEY);      if(s) rules    ={...DEF,...JSON.parse(s)}; } catch(e){}
+    let legacy = null;
+    try { const s=localStorage.getItem(KEY); if(s) { legacy=JSON.parse(s); rules={...DEF,...legacy}; } } catch(e){}
     try { const s=localStorage.getItem(MOVE_KEY); if(s) moveRules=JSON.parse(s); } catch(e){}
+    _migrate(legacy);
     return rules;
   }
+
+  // Old "Filters" lists (domain/email/name/subject/body) become delete filters, once.
+  function _migrate(legacy) {
+    let done = false;
+    try { done = !!localStorage.getItem(MIG_KEY); } catch(e){}
+    if (done) return;
+    if (legacy) {
+      const map = [['domain','domain','Blocked domains'],['email','from','Blocked addresses'],
+                   ['name','name','Blocked sender names'],['subject','subject','Blocked subjects'],['body','any','Blocked keywords']];
+      const sysId = { domain:'blk_domain', email:'blk_address', subject:'blk_subject', body:'blk_body' };
+      let added = false;
+      for (const [k, field, name] of map) {
+        const list = (legacy[k]?.list || []).filter(Boolean);
+        if (!list.length) continue;
+        moveRules.push({ id: sysId[k] || ('mig_'+k), name, enabled: !!legacy[k].enabled, field,
+          keywords: list, match:'any', exceptions:[], action:'delete', targetFolder:'' });
+        added = true;
+      }
+      if (added) saveMoveRules(moveRules);
+    }
+    try { localStorage.setItem(MIG_KEY, '1'); } catch(e){}
+  }
+
   function save(r) { rules={...rules,...r}; localStorage.setItem(KEY,JSON.stringify(rules)); return rules; }
   function get()   { return rules; }
 
@@ -33,17 +64,21 @@ const Rules = (() => {
   }
   function deleteMoveRule(id) { moveRules=moveRules.filter(r=>r.id!==id); saveMoveRules(moveRules); }
 
-  function check(msg) {
-    const sub=(msg.subject||'').toLowerCase(), frm=(msg.from||'').toLowerCase();
-    const bd=(msg.rawBody||'').toLowerCase().slice(0,2000);
-    const addr=ImapEngine.extractAddr(msg.from||''), nm=ImapEngine.extractName(msg.from||'').toLowerCase();
-    const hits=[];
-    if(rules.domain?.enabled)  for(const d of rules.domain.list||[])  {if(addr.includes(d.toLowerCase())){hits.push({rule:'domain',value:d});break;}}
-    if(rules.email?.enabled)   for(const e of rules.email.list||[])   {if(addr===e.toLowerCase()||addr.includes(e.toLowerCase())){hits.push({rule:'email',value:e});break;}}
-    if(rules.name?.enabled)    for(const n of rules.name.list||[])    {if(nm.includes(n.toLowerCase())){hits.push({rule:'name',value:n});break;}}
-    if(rules.subject?.enabled) for(const k of rules.subject.list||[]) {if(sub.includes(k.toLowerCase())){hits.push({rule:'subject',value:k});break;}}
-    if(rules.body?.enabled)    for(const k of rules.body.list||[])    {if(bd.includes(k.toLowerCase())){hits.push({rule:'body',value:k});break;}}
-    return hits;
+  // Add a value to the matching system "Blocked …" filter (created / re-enabled as needed).
+  // type: 'address' | 'domain' | 'subject' | 'body'.  Returns true if something was added.
+  function addBlock(type, value) {
+    const def = BLOCK[type]; const v = String(value || '').trim().toLowerCase();
+    if (!def || !v) return false;
+    let r = moveRules.find(x => x.id === def.id);
+    if (!r) {
+      r = { id:def.id, name:def.name, enabled:true, field:def.field, keywords:[], match:'any', exceptions:[], action:'delete', targetFolder:'' };
+      moveRules.push(r);
+    }
+    r.enabled = true; r.action = 'delete'; r.match = 'any';
+    const had = r.keywords.some(k => String(k).toLowerCase() === v);
+    if (!had) r.keywords.push(v);
+    saveMoveRules(moveRules);
+    return !had;
   }
 
   // Body text lookup (set by app.js): (msg) => cached body text or ''.
@@ -54,31 +89,37 @@ const Rules = (() => {
   function _plain(s) { return String(s || '').replace(/<[^>]+>/g, ' ').toLowerCase(); }
 
   function _hay(msg) {
-    const frm = (msg.from || '').toLowerCase();
+    const frm  = (msg.from || '').toLowerCase();
     const addr = ImapEngine.extractAddr(msg.from || '');
-    const nm = ImapEngine.extractName(msg.from || '').toLowerCase();
-    const sub = (msg.subject || '').toLowerCase();
+    const nm   = ImapEngine.extractName(msg.from || '').toLowerCase();
+    const sub  = (msg.subject || '').toLowerCase();
     let bd = '';
     try { bd = _plain(bodyProvider(msg) || msg.rawBody || '').slice(0, 20000); } catch (e) {}
     // List-Unsubscribe header is a strong newsletter signal and is available at header time.
     const lu = (msg.listUnsub || '').toLowerCase();
-    return { from: frm, domain: addr, subject: sub, body: bd, name: nm,
-             any: [sub, frm, bd, lu ? 'unsubscribe ' + lu : ''].join('\n') };
+    return { from:addr, dom:(addr.split('@')[1] || ''), subject:sub, body:bd, name:nm,
+             any:[sub, frm, bd, lu ? 'unsubscribe ' + lu : ''].join('\n') };
   }
 
-  // Keyword filter: matches if ANY keyword hits `field`, unless ANY exception keyword
-  // appears anywhere in the message (subject, sender, body). Returns first matching
-  // enabled rule or null. rule.action: 'delete' | 'move' (missing = 'move', for old rules).
+  function _hit(field, k, h) {
+    if (field === 'from')   return h.from === k || (!k.includes('@') && h.from.includes(k));
+    if (field === 'domain') return h.dom === k || h.dom.endsWith('.' + k) || (!k.includes('.') && h.dom.includes(k));
+    return (h[field] ?? h.subject).includes(k);
+  }
+
+  // match 'any' (default): at least one keyword hits. match 'all': every keyword hits.
+  // Exceptions (any one present anywhere in subject/sender/body) always keep the mail.
   function checkMove(msg, ruleList) {
     const h = _hay(msg);
     for (const rule of (ruleList || moveRules)) {
       if (!rule.enabled) continue;
       const action = rule.action === 'delete' ? 'delete' : 'move';
       if (action === 'move' && !rule.targetFolder) continue;
-      const kws = (rule.keywords || []).map(k => k.toLowerCase()).filter(Boolean); if (!kws.length) continue;
-      const hay = h[rule.field || 'subject'] ?? h.subject;
-      if (!kws.some(k => hay.includes(k))) continue;
-      const ex = (rule.exceptions || []).map(k => k.toLowerCase()).filter(Boolean);
+      const kws = (rule.keywords || []).map(k => String(k).toLowerCase().trim()).filter(Boolean); if (!kws.length) continue;
+      const field = rule.field || 'subject';
+      const ok = rule.match === 'all' ? kws.every(k => _hit(field, k, h)) : kws.some(k => _hit(field, k, h));
+      if (!ok) continue;
+      const ex = (rule.exceptions || []).map(k => String(k).toLowerCase().trim()).filter(Boolean);
       if (ex.length && ex.some(k => h.any.includes(k))) continue;
       return rule;
     }
@@ -118,5 +159,6 @@ const Rules = (() => {
     return dupes;
   }
 
-  return {load,save,get,check,findDupes,getMoveRules,saveMoveRules,addMoveRule,updateMoveRule,deleteMoveRule,checkMove,setBodyProvider,needsBody,hasActiveFilters};
+  return {load,save,get,findDupes,getMoveRules,saveMoveRules,addMoveRule,updateMoveRule,deleteMoveRule,
+          checkMove,addBlock,setBodyProvider,needsBody,hasActiveFilters};
 })();

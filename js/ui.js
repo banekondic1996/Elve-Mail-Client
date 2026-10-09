@@ -312,6 +312,7 @@ const UI = (() => {
     const nm=ImapEngine.extractName(msg.from||'');
     _set('reader-avatar', (nm[0]||'?').toUpperCase());
     document.getElementById('ai-panel')?.classList.add('hidden');
+    document.getElementById('reader-img-banner')?.classList.add('hidden');
     const iframe=document.getElementById('reader-iframe');
     if (iframe) _writeIframe(iframe,'<div style="padding:32px;color:#666;font-family:system-ui">Loading…</div>');
   }
@@ -334,7 +335,8 @@ const UI = (() => {
     };
   }
 
-  function setEmailBody(bodyData, msg) {
+  function setEmailBody(bodyData, msg, opts) {
+    opts = opts || {};
     _ctxMsg = msg || null;
     const iframe = document.getElementById('reader-iframe');
     if (!iframe) return;
@@ -342,8 +344,13 @@ const UI = (() => {
 
     const plainSplit = _splitPlainThreads(bodyData.text || '');
 
+    const blockImages = !!(opts.blockImages && bodyData.html && _hasRemoteContent(bodyData.html));
+    _setImageBanner(blockImages, opts.onAllowImages);
+    // document.open() keeps the previous document's Content-Security-Policy, so whenever the
+    // blocking state changes the reader gets a brand-new frame.
+    _forceFresh = blockImages || _cspActive; _cspActive = blockImages;
     if (bodyData.html) {
-      _writeIframe(iframe, _wrapHtml(bodyData.html, plainSplit));
+      _writeIframe(iframe, _wrapHtml(bodyData.html, plainSplit, { blockImages }));
     } else if (bodyData.text?.trim()) {
       const split = plainSplit;
       const replyItems = split.replies || [];
@@ -372,6 +379,29 @@ const UI = (() => {
 
     // Render attachment bar below iframe
     _renderAttachments(bodyData.attachments || []);
+  }
+
+  // ── Remote content blocking (spam folder) ───────────────────────────────
+  // Remote images are tracking pixels: in Spam nothing is fetched until the user approves.
+  function _hasRemoteContent(html) {
+    const h = String(html || '');
+    return /(?:src|background|poster)\s*=\s*["']?\s*(?:https?:)?\/\//i.test(h) ||
+           /url\(\s*["']?\s*(?:https?:)?\/\//i.test(h) ||
+           (/srcset\s*=/i.test(h) && /https?:\/\//i.test(h)) ||
+           /<link[^>]+href\s*=\s*["']?\s*(?:https?:)?\/\//i.test(h);
+  }
+  function _setImageBanner(show, onAllow) {
+    let bar = document.getElementById('reader-img-banner');
+    if (!show) { bar?.classList.add('hidden'); return; }
+    if (!bar) {
+      bar = document.createElement('div'); bar.id = 'reader-img-banner'; bar.className = 'img-banner';
+      const wrap = document.getElementById('reader-iframe')?.parentElement;
+      if (!wrap) return;
+      wrap.insertBefore(bar, wrap.firstChild);
+    }
+    bar.classList.remove('hidden');
+    bar.innerHTML = '<span>🛡 Images and remote content are blocked because this message is in Spam. Senders use them to track whether you opened the mail.</span><button type="button">Load images</button>';
+    bar.querySelector('button').onclick = () => { bar.classList.add('hidden'); onAllow && onAllow(); };
   }
 
   function _renderAttachments(attachments) {
@@ -674,8 +704,13 @@ const UI = (() => {
     return mins+'min before';
   }
 
-  function _wrapHtml(html, plainSplit) {
-    const pal = _readerPalette();
+  function _wrapHtml(html, plainSplit, opts) {
+    // HTML mail is designed for a light canvas. Like Gmail/Thunderbird we always render it
+    // on white so every mail looks the same, whatever the app theme is.
+    const pal = { bg:'#ffffff', text:'#202124', text2:'#5f6368', border:'#dadce0', panel:'#f6f8fa', accent:'#1a73e8', mailSize:_readerPalette().mailSize };
+    const csp = opts?.blockImages
+      ? `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; font-src data:">`
+      : '';
     const clean = html
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/\son\w+\s*=\s*["'][^"']*["']/gi, '');
@@ -685,15 +720,15 @@ const UI = (() => {
     <h3>Conversation Thread</h3>
     ${replies.map((seg, i) => `<details class="reply-thread" id="_txt_reply_${i+1}" ${i===0?'open':''}><summary>${esc(_replyLabel(seg, i))}</summary><div class="reply-thread-inner"><pre>${esc(seg)}</pre></div></details>`).join('')}
   </section>` : '';
-    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">${csp}
 <style>
+  html{background:#ffffff;min-height:100%;}
   html,body{margin:0;padding:0;}
-  body{background:${pal.bg}!important;color:${pal.text}!important;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:${pal.mailSize};line-height:1.7;padding:16px;max-width:100%;overflow-x:hidden;word-break:break-word;}
+  body{background:#ffffff;color:${pal.text};min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:${pal.mailSize};line-height:1.7;padding:16px;max-width:100%;overflow-x:hidden;word-break:break-word;}
   body.has-reply-nav{padding-right:200px;}
   img{max-width:100%!important;height:auto!important;}
   *{max-width:100%;box-sizing:border-box;}
-  p,div,span,td,th,li,pre,strong,b,em{color:inherit;}
-  a{color:${pal.accent}!important;cursor:pointer;}
+  a{color:${pal.accent};cursor:pointer;}
   a[title]{position:relative;}
   blockquote,.gmail_quote,.yahoo_quoted,.protonmail_quote{display:block!important;margin:12px 0 12px 8px!important;padding-left:12px!important;border-left:2px solid ${pal.border}!important;color:${pal.text2}!important;}
   details.reply-thread{margin:12px 0;border:1px solid ${pal.border};border-radius:10px;background:${pal.panel};}
@@ -716,8 +751,11 @@ const UI = (() => {
 </head><body>${clean}${threadSection}</body></html>`;
   }
 
+  let _forceFresh = false, _cspActive = false;
   function _writeIframe(iframe, html) {
     try {
+      if (_forceFresh) { const n = iframe.cloneNode(false); iframe.replaceWith(n); iframe = n; }
+      _forceFresh = false;
       const doc = iframe.contentDocument || iframe.contentWindow?.document;
       if (!doc) return;
       doc.open(); doc.write(html); doc.close();
@@ -729,7 +767,6 @@ const UI = (() => {
   function _wireIframeInteractions(doc) {
     try {
       _enhanceReplyThreads(doc);
-      _enforceReadableColors(doc);
       // Remove any old context menu
       doc.getElementById('_ctx')?.remove();
       doc.getElementById('_tt')?.remove();

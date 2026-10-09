@@ -33,6 +33,17 @@ const ImapEngine = (() => {
   let opConn   = null;
   let pollConn = null;
   let adminConn = null;
+  let fgConn = null;       // foreground body fetch (user clicked a mail) — never queues behind prefetch
+  // Which mailbox each connection currently has selected, so we skip redundant SELECTs.
+  const _opSt = { name:null, ro:true }, _fgSt = { name:null, ro:true }, _pfSt = { name:null, ro:true };
+  function _resetBoxStates() { [_opSt,_fgSt,_pfSt].forEach(st => { st.name = null; st.ro = true; }); }
+  function _selectBox(conn, st, folder, ro) {
+    if (st.name === folder && (st.ro === false || ro)) return Promise.resolve();
+    return new Promise((res, rej) => conn.openBox(folder, !!ro, e => {
+      if (e) { st.name = null; return rej(e); }
+      st.name = folder; st.ro = !!ro; res();
+    }));
+  }
   let cfg      = null;
   let _listQueue = Promise.resolve();
 
@@ -99,8 +110,8 @@ const ImapEngine = (() => {
     // If switching accounts, close old connections and wipe memory caches so the
     // new account never sees stale headers/bodies from the previous one.
     if (cfg && cfg.email !== config.email) {
-      [listConn,bodyConn,opConn,pollConn,adminConn].forEach(c=>{try{c?.end();}catch(_){}});
-      listConn=bodyConn=opConn=pollConn=adminConn=null;
+      [listConn,bodyConn,fgConn,opConn,pollConn,adminConn].forEach(c=>{try{c?.end();}catch(_){}});
+      listConn=bodyConn=fgConn=opConn=pollConn=adminConn=null; _resetBoxStates();
       _listQueue = Promise.resolve();
       headerCache.clear(); bodyCache.clear(); allHdrs.clear();
     }
@@ -143,8 +154,9 @@ const ImapEngine = (() => {
   }
 
   async function _ensureList() { if (!_alive(listConn)) { listConn = await _mkConn(cfg); } }
-  async function _ensureBody() { if (!_alive(bodyConn)) bodyConn = await _mkConn(cfg); }
-  async function _ensureOp()   { if (!_alive(opConn))   opConn   = await _mkConn(cfg); }
+  async function _ensureBody() { if (!_alive(bodyConn)) { bodyConn = await _mkConn(cfg); _pfSt.name = null; } }
+  async function _ensureFg()   { if (!_alive(fgConn))   { fgConn   = await _mkConn(cfg); _fgSt.name = null; } }
+  async function _ensureOp()   { if (!_alive(opConn))   { opConn   = await _mkConn(cfg); _opSt.name = null; } }
   async function _ensurePoll() { if (!_alive(pollConn)) pollConn = await _mkConn(cfg); }
   async function _ensureAdmin(){ if (!_alive(adminConn)) adminConn = await _mkConn(cfg); }
 
@@ -156,8 +168,8 @@ const ImapEngine = (() => {
 
   function disconnect() {
     clearPoll();
-    [listConn, bodyConn, opConn, pollConn, adminConn].forEach(c => { if (c) try { c.end(); } catch(_) {} });
-    listConn = bodyConn = opConn = pollConn = adminConn = null;
+    [listConn, bodyConn, fgConn, opConn, pollConn, adminConn].forEach(c => { if (c) try { c.end(); } catch(_) {} });
+    listConn = bodyConn = fgConn = opConn = pollConn = adminConn = null; _resetBoxStates();
     _listQueue = Promise.resolve();
   }
 
@@ -394,42 +406,57 @@ const ImapEngine = (() => {
   }
 
   // ── prefetchBodies — background, skip already-cached ─────────────────────
-  async function prefetchBodies(folder, uids, onProgress) {
+  // Prefetch runs on its own connection, one job at a time. Jobs started from the UI
+  // ({latest:true}) are superseded by the next UI job (user switched folder), so stale
+  // folders stop downloading instead of delaying the one on screen.
+  let _pfChain = Promise.resolve();
+  let _pfLatest = 0;
+  function _thawBody(stored) {
+    stored.attachments = (stored.attachments || []).map(a => ({
+      ...a, content: a.content ? new Uint8Array(a.content) : null,
+    }));
+    return stored;
+  }
+  function prefetchBodies(folder, uids, onProgress, opts) {
+    const mine = opts?.latest ? ++_pfLatest : 0;
+    const job = _pfChain.then(() => _prefetchJob(folder, uids, onProgress, mine));
+    _pfChain = job.catch(() => {});
+    return job;
+  }
+  async function _prefetchJob(folder, uids, onProgress, mine) {
     if (!uids?.length) return;
+    const stale = () => mine && mine !== _pfLatest;
+    if (stale()) return;
 
-    // Determine which UIDs need fetching (not in memory or IndexedDB)
+    // Which UIDs are not cached yet? IndexedDB reads run in parallel chunks.
     const needed = [];
-    for (const uid of uids) {
-      const bk = _bkey(folder, uid);
-      if (bodyCache.has(bk)) continue;
-      const stored = await _dbGet('bodies', bk);
-      if (stored) {
-        // Warm memory cache from IndexedDB
-        stored.attachments = (stored.attachments || []).map(a => ({
-          ...a, content: a.content ? new Uint8Array(a.content) : null,
-        }));
-        bodyCache.set(bk, stored);
-      } else {
-        needed.push(uid);
-      }
+    const todo = uids.filter(uid => !bodyCache.has(_bkey(folder, uid)));
+    for (let i = 0; i < todo.length; i += 40) {
+      const chunk = todo.slice(i, i + 40);
+      const got = await Promise.all(chunk.map(uid => _dbGet('bodies', _bkey(folder, uid))));
+      chunk.forEach((uid, j) => {
+        if (got[j]) bodyCache.set(_bkey(folder, uid), _thawBody(got[j]));
+        else needed.push(uid);
+      });
     }
 
     const alreadyDone = uids.length - needed.length;
     onProgress && onProgress({ done: alreadyDone, total: uids.length });
-
     if (!needed.length) return;
 
-    await _ensureBody();
-    await new Promise((res, rej) => {
-      bodyConn.openBox(folder, false, e => e ? rej(e) : res());
-    });
-
-    const BATCH = 5;
+    const BATCH = 8;
     let done = alreadyDone;
     for (let i = 0; i < needed.length; i += BATCH) {
-      const batch = needed.slice(i, i + BATCH);
-      await _fetchBodiesBatch(folder, batch).catch(() => {});
-      done += batch.length;
+      if (stale()) return;
+      const batch = needed.slice(i, i + BATCH).filter(uid => !bodyCache.has(_bkey(folder, uid)));
+      if (batch.length) {
+        try {
+          await _ensureBody();
+          await _selectBox(bodyConn, _pfSt, folder, false);
+          await _fetchBodiesBatch(folder, batch);
+        } catch(_) { _pfSt.name = null; }
+      }
+      done += Math.min(BATCH, needed.length - i);
       onProgress && onProgress({ done, total: uids.length });
     }
   }
@@ -460,10 +487,7 @@ const ImapEngine = (() => {
               };
               bodyCache.set(bk, bd);
               // Persist: convert Buffer/Uint8Array to plain array for IndexedDB
-              const toStore = { ...bd, attachments: bd.attachments.map(a => ({
-                ...a, content: a.content ? Array.from(a.content) : null,
-              })) };
-              _dbPut('bodies', bk, toStore).catch(() => {});
+              _dbPut('bodies', bk, _freezeBody(bd)).catch(() => {});
             } catch(e) {
               const bi = raw.indexOf('\r\n\r\n');
               const bd = { html: null, listUnsub: '', listUnsubPost: '', text: bi >= 0 ? raw.slice(bi+4) : raw, attachments: [] };
@@ -480,70 +504,75 @@ const ImapEngine = (() => {
   }
 
   // ── fetchBody — instant from cache ────────────────────────────────────────
-  async function fetchBody(folder, uid) {
+  // Attachment bytes are stored as typed arrays (structured clone). They used to be
+  // converted to plain number arrays, which made big mails very slow to save and load.
+  function _freezeBody(bd) {
+    return { ...bd, attachments: (bd.attachments || []).map(a => ({
+      ...a, content: a.content ? new Uint8Array(a.content) : null,
+    })) };
+  }
+
+  const _bodyInflight = new Map();
+  function fetchBody(folder, uid) {
     const bk = _bkey(folder, uid);
+    if (bodyCache.has(bk)) { _markSeenAsync(folder, uid); return Promise.resolve(bodyCache.get(bk)); }
+    // De-duplicate: double clicks / hover warm-ups share one request.
+    if (_bodyInflight.has(bk)) return _bodyInflight.get(bk);
+    const p = _fetchBodyImpl(folder, uid, bk);
+    _bodyInflight.set(bk, p);
+    const clear = () => _bodyInflight.delete(bk);
+    p.then(clear, clear);
+    return p;
+  }
 
-    // Memory
-    if (bodyCache.has(bk)) {
-      _markSeenAsync(folder, uid);
-      return bodyCache.get(bk);
-    }
-
+  async function _fetchBodyImpl(folder, uid, bk) {
     // IndexedDB
     const stored = await _dbGet('bodies', bk);
     if (stored) {
-      stored.attachments = (stored.attachments || []).map(a => ({
-        ...a, content: a.content ? new Uint8Array(a.content) : null,
-      }));
+      _thawBody(stored);
       bodyCache.set(bk, stored);
       _markSeenAsync(folder, uid);
       return stored;
     }
 
-    // IMAP fallback (uncached)
-    await _ensureBody();
-    await new Promise((res, rej) => { bodyConn.openBox(folder, false, e => e ? rej(e) : res()); });
-    return new Promise((resolve, reject) => {
-      const f = bodyConn.fetch([uid], { bodies: [''], markSeen: true });
-      let raw = '';
-      f.on('message', m => m.on('body', s => s.on('data', c => raw += c)));
+    // IMAP fallback (uncached): dedicated connection, so it never waits for prefetch.
+    await _ensureFg();
+    await _selectBox(fgConn, _fgSt, folder, false);
+    const raw = await new Promise((resolve, reject) => {
+      const f = fgConn.fetch([uid], { bodies: [''], markSeen: true });
+      const chunks = [];
+      f.on('message', m => m.on('body', s => s.on('data', c => chunks.push(c))));
       f.once('error', reject);
-      f.once('end', async () => {
-        if (!raw) return resolve({ html: null, text: '(empty)', attachments: [], listUnsub: '' });
-        try {
-          const p = await simpleParser(raw);
-          const bd = {
-            html: p.html || null, text: p.text || null,
-            listUnsub: p.headers?.get('list-unsubscribe') || '',
-            listUnsubPost: p.headers?.get('list-unsubscribe-post') || '',
-            attachments: (p.attachments || []).map(a => ({
-              filename: a.filename || 'attachment',
-              contentType: a.contentType || 'application/octet-stream',
-              size: a.size || 0, content: a.content,
-            })),
-          };
-          bodyCache.set(bk, bd);
-          _dbPut('bodies', bk, { ...bd, attachments: bd.attachments.map(a => ({ ...a, content: a.content ? Array.from(a.content) : null })) }).catch(() => {});
-          resolve(bd);
-        } catch(e) {
-          const bi = raw.indexOf('\r\n\r\n');
-          const bd = { html: null, text: bi >= 0 ? raw.slice(bi+4) : raw, attachments: [], listUnsub: '', listUnsubPost: '' };
-          bodyCache.set(bk, bd);
-          _dbPut('bodies', bk, bd).catch(() => {});
-          resolve(bd);
-        }
-      });
+      f.once('end', () => resolve(chunks.join('')));
     });
+    if (!raw) return { html: null, text: '(empty)', attachments: [], listUnsub: '' };
+    let bd;
+    try {
+      const p = await simpleParser(raw);
+      bd = {
+        html: p.html || null, text: p.text || null,
+        listUnsub: p.headers?.get('list-unsubscribe') || '',
+        listUnsubPost: p.headers?.get('list-unsubscribe-post') || '',
+        attachments: (p.attachments || []).map(a => ({
+          filename: a.filename || 'attachment',
+          contentType: a.contentType || 'application/octet-stream',
+          size: a.size || 0, content: a.content,
+        })),
+      };
+    } catch(e) {
+      const bi = raw.indexOf('\r\n\r\n');
+      bd = { html: null, text: bi >= 0 ? raw.slice(bi + 4) : raw, attachments: [], listUnsub: '', listUnsubPost: '' };
+    }
+    bodyCache.set(bk, bd);
+    _dbPut('bodies', bk, _freezeBody(bd)).catch(() => {});
+    return bd;
   }
 
   function _markSeenAsync(folder, uid) {
     if (!uid) return;
-    _ensureOp().then(() => new Promise(res => {
-      opConn.openBox(folder, false, err => {
-        if (err) return res();
-        opConn.addFlags([uid], ['\\Seen'], () => res());
-      });
-    })).catch(() => {});
+    _ensureOp().then(() => _selectBox(opConn, _opSt, folder, false))
+      .then(() => new Promise(res => opConn.addFlags([uid], ['\\Seen'], () => res())))
+      .catch(() => { _opSt.name = null; });
   }
 
   // ── Trash / Spam / Archive ────────────────────────────────────────────────
@@ -579,9 +608,7 @@ const ImapEngine = (() => {
     if (!uids?.length) return;
     await _ensureOp();
     return new Promise((res, rej) => {
-      opConn.openBox(fromFolder, false, err => {
-        if (err) return rej(err);
-
+      _selectBox(opConn, _opSt, fromFolder, false).then(() => {
         const done = () => { _evict(fromFolder, uids); res(); };
         const fail = e => rej(e || new Error('Move failed'));
 
@@ -606,7 +633,7 @@ const ImapEngine = (() => {
         } else {
           copyDelete();
         }
-      });
+      }).catch(rej);
     });
   }
 
@@ -635,21 +662,18 @@ const ImapEngine = (() => {
     } catch(e) {
       // If archive is unavailable on this provider, at least mark as read.
       await _ensureOp();
-      await new Promise(resolve => {
-        opConn.openBox(folder, false, err => {
-          if (err) return resolve();
-          opConn.addFlags(uids, ['\\Seen'], () => resolve());
-        });
-      });
+      await _selectBox(opConn, _opSt, folder, false).then(
+        () => new Promise(resolve => opConn.addFlags(uids, ['\\Seen'], () => resolve())),
+        () => {});
     }
   }
 
   async function fetchRawSource(folder, uid) {
     if (!uid) return { raw: '', headers: '', body: '' };
-    await _ensureBody();
-    await new Promise((res, rej) => { bodyConn.openBox(folder, true, e => e ? rej(e) : res()); });
+    await _ensureFg();
+    await _selectBox(fgConn, _fgSt, folder, true);
     return new Promise((resolve, reject) => {
-      const f = bodyConn.fetch([uid], { bodies: [''], markSeen: false });
+      const f = fgConn.fetch([uid], { bodies: [''], markSeen: false });
       let raw = '';
       f.on('message', m => m.on('body', s => s.on('data', c => raw += c)));
       f.once('error', reject);
@@ -863,7 +887,7 @@ const ImapEngine = (() => {
     const want = String(addr || '').toLowerCase().trim();
     if (!want) return [];
     await _ensureOp();
-    await new Promise((res, rej) => opConn.openBox(folder, true, e => e ? rej(e) : res()));
+    await _selectBox(opConn, _opSt, folder, true);
     const cand = await new Promise((res, rej) => opConn.search([['FROM', want]], (e, u) => e ? rej(e) : res(u || [])));
     const exact = [];
     for (let i = 0; i < cand.length; i += 300) {
@@ -888,7 +912,7 @@ const ImapEngine = (() => {
   async function deletePermanently(folder, uids) {
     if (!uids?.length) return;
     await _ensureOp();
-    await new Promise((res, rej) => opConn.openBox(folder, false, e => e ? rej(e) : res()));
+    await _selectBox(opConn, _opSt, folder, false);
     await new Promise((res, rej) => opConn.addFlags(uids, ['\\Deleted'], e => e ? rej(e) : res()));
     await new Promise((res, rej) => opConn.expunge(e => e ? rej(e) : res()));
     _evict(folder, uids);
@@ -908,6 +932,7 @@ const ImapEngine = (() => {
   }
 
   function _clearAccountCacheMemory() {
+    _resetBoxStates();
     headerCache.clear();
     bodyCache.clear();
     allHdrs.clear();

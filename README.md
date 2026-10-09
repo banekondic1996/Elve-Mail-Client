@@ -13,7 +13,10 @@ F' Microsoft, I have to make every app by myself i guess <br>
 -Tooltip for links, so you know the real link
 -Calendar that can load .ics 
 -Multiple mail accounts at same time
--Keyword filters with exception words (delete or move to folder); run once on start and on every received mail
+-Keyword filters (the only filter screen): match any/all keywords, exception words, delete or move to folder, suggestions from your inbox; runs once on start and on every received mail
+-Right click a mail: Block sender, Move to spam, Delete, Delete all from sender
+-Remote images are blocked in Spam until you click Load images
+-Resizable mail list (drag the divider, double-click to reset)
 -Select all mail (page or whole folder) for fast deleting
 -Right click a mail -> delete all mail from that sender
 </pre>
